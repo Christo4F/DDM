@@ -13,6 +13,7 @@ import de.ddm.actors.patterns.LargeMessageProxy;
 import de.ddm.serialization.AkkaSerializable;
 import de.ddm.singletons.InputConfigurationSingleton;
 import de.ddm.singletons.SystemConfigurationSingleton;
+import de.ddm.structures.BatchContainer;
 import de.ddm.structures.InclusionDependency;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
@@ -98,6 +99,8 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 		this.dependencyWorkers = new ArrayList<>();
 
+		this.storage = new BatchContainer[this.inputFiles.length];
+
 		context.getSystem().receptionist().tell(Receptionist.register(dependencyMinerService, context.getSelf()));
 	}
 
@@ -117,6 +120,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 	private final List<ActorRef<DependencyWorker.Message>> dependencyWorkers;
 
+	private final BatchContainer[] storage;
 	////////////////////
 	// Actor Behavior //
 	////////////////////
@@ -144,14 +148,22 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 	private Behavior<Message> handle(HeaderMessage message) {
 		this.headerLines[message.getId()] = message.getHeader();
+		this.storage[message.getId()] = new BatchContainer(message.getHeader().length);
 		return this;
 	}
 
 	private Behavior<Message> handle(BatchMessage message) {
 		// Ignoring batch content for now ... but I could do so much with it.
-
-		if (message.getBatch().size() != 0)
+		List<String[]> batch = message.getBatch();
+		int id = message.getId();
+		if (batch.size() != 0) {
+			storage[id].addBatch(batch);
 			this.inputReaders.get(message.getId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
+		}
+		else{
+			this.getContext().getLog().info("Finished Loading File-Id " + id);
+			this.getContext().getLog().info(storage[id].getColumnBatch(storage[id].getColumnNumber()-1,storage[id].getBatchNumber() - 1)[1]);
+		}
 		return this;
 	}
 

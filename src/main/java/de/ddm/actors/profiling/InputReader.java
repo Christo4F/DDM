@@ -94,15 +94,25 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 	}
 
 	private Behavior<Message> handle(ReadBatchMessage message) throws IOException, CsvValidationException {
-		List<String[]> batch = new ArrayList<>(this.batchSize);
+		List<String[]> rowBatch = new ArrayList<>(this.batchSize);
 		for (int i = 0; i < this.batchSize; i++) {
 			String[] line = this.reader.readNext();
 			if (line == null)
 				break;
-			batch.add(line);
+			rowBatch.add(line);
 		}
 
-		message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, batch));
+		if(rowBatch.size() == 0){
+			message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, rowBatch));
+			return this;
+		}
+		List<String[]> columnBatch= new ArrayList<String[]>(this.header.length);
+		for(int i = 0; i < this.header.length; i++){
+			final int j = i;
+			columnBatch.add((String[])rowBatch.stream().map(row -> row[j]).toArray(String[]::new));
+		}
+
+		message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, columnBatch));
 		return this;
 	}
 
