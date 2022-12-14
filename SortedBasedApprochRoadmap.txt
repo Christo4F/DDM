@@ -1,0 +1,55 @@
+TODO:
+columIds sinnvoll vergeben, sodass man sie im ResultCollector richtig zuordnen kann
+Versenden von LIsten muss ggf in mehreren Nachrichten erfolgen. Ggf kann man durch frühzeitiges Vergleichen unnötiges Versenden von Spaltenteilen vermeiden. Hierzu muss die DAtenstruktur evtl leicht geändert werden.
+
+InputReader:
+TODO: Bereits auf InputReader-Ebene die eingelesenen Batch-Dateien zu Spalten konvertieren
+
+DependencyMiner:
+→ Messages:
+	BatchMessage: List<String[]> batch : (10.000) Zeilen einer Tabelle vom InputReader, int columnId
+	RegistrationMessage: ActorRef<DependencyWorker.Message> worker: neuer DependencyWorker registriert sich
+	SortCompletationMessage: <ActorRef: DependencyWorker>: Dependency teilt mit, dass er mit Sortieren fertig ist und erwartet neue Sortieraufgabe
+	CompareCompletationMessage: int columid1, int columnId2, boolean 1in2, boolean 2in1, ActorRef<DependencyWorker> dependencyWorekr: DependencyWorker teilt ERgebnis der CompareTask mit
+	
+→ State:
+	List<ArrayList<String>> unsortedColumns: im Prinzip unassignedTask Liste, speichert alle Spalten die noch sortiert werden müssen.
+	List<int> unsortedIds: Speichert columnIds der Spalten in unsortedColumns
+	List<ActorRef<DependencyWorker> idleDepencyWorker: Speichert die DependencyWorker ohne Aufgabe
+	Boolean[][] comparedColumns: comparedColumns[columnId1][columnId2] == true, falls geprüft wurde, ob columnId1 in columnId2 enthalten ist
+	HashMap<int><ActorRef<DependencyMiner:Message>> columnSorter: Speichert, welcher DependencyMiner eine columnId sortiert hat
+	
+→ Behavior:
+	on BatchMessage: Wenn es idleDepency Worker gibt, übergebe Aufgabe über void handSortTaskToWorker. Falls nicht, schreibe Spalte in unsortedColumns und id in unsortedIds 
+	on RegistrationMessage: Aufruf handSortTaskToWorker(dependencyWorker)
+	on SortCompletationMessage: Stellt fest, ob jetzt alles sortiert ist. Falls nein: Aufruf handSortTaskToWorker(dependencyWorker) Falls ja: Starte Phase 2
+	on CompareCompletationMessage: Schreibe Ergebnis in ResultCollector. Prüfe ShutdownBedingung, andernFalls rufe handCompareTaskToWorker auf
+	
+→ voids:
+	handSortTasktoWorker(ActorRef<DependencyWorker>) Falls es keine SortAufgabe gibt, setze Worker auf idleDepenencyWorker. Sonst: Wählt aus unsortedColumns eine noch nicht verschickte Spalte aus und sendet sie als SortTaskMessage an DependencyWorker. Anschließend löscht er die Spalte aus unsortedColumns und die zug. Id aus unsortedIds. Ergänzt columSorter mit entsprechender Actorreferenz.
+	
+	handCompareTaskToWorker(ActorRef<DependencyWorker>) Falls es keine CompareAufgabe gibt, dannsetze Worker auf idleDependencyWorker. Sonst: Übergebe dem DependencyWorker eine sinnvolle Aufgabe über CompareTaskMessage, markiere in comparedColumns, welche Aufgabe schon gesendet wurde.
+
+DependencyWorker:
+→ Messages:
+	SortTaskMassage: List<String> column, int columnId
+	CompareTaskMessage: int columnId1, int columnId2, ActorRef<DependencyWorker> worker1, ActorRef<DependencyWorker> worker2
+	SendSortedListMessage: ActorRef<LargeMessageProxy> receiver, int columId: Anfrage, die Liste mit Id columnId zu schicken
+	SortedListMessage: List<String> sortedColumn, int columnId: Die vorherige Anfrage wird bedient
+	
+→ State:
+	HashMap<int><List<String>> ColumContainer: Speichert sortierte Spalten anhand ihrer ColumnId.
+	int compareTaskcolumId1
+	int compareTaskcolumId2
+	ActorRef<DependencyMiner> miner
+	
+→ Behavior:
+	on SortTaskMessage: Sortiere die Liste. Speichere sie anschließend in ColumnContainer anhand der columnId. Schicke anschließend SortCompletationMessage zurück an Dependency Miner.
+	on CompareTaskMessage: Wenn beide columIds vorhanden: Rufe compareColums auf. Sonst: Fordere fehlende Spalten bei entsprechenden Workern mit SendSortedListMessage an. Schreibe aktuelle Aufgabe in State: ( compareTaskcolumnId1, ...Id2 und miner)
+	on SendSortedListMessage: Sende eine SortedListMessage an receiver.
+	on SortListMessage: Ergänze HashMap ColumnContainer mit gesendeter Information. Lese aktuelle Aufgabe aus State, Falls jetzt alle benötigten SPalten da: starte compareColumns().
+	
+→ voids:
+	void compareColumns(int columId1, int columnId2, ActorRef<DependencyMiner> miner) Holt die Spalten mit entsprechenden ids aus ColumnContainer, vergleicht sie auf IND (mit Berücksichtigung der Sortierung) und schickt das Ergebnis als CompareCompletationMessage an miner. 
+	
+	
