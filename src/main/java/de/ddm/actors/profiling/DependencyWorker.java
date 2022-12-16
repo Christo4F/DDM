@@ -7,14 +7,14 @@ import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import akka.actor.typed.receptionist.Receptionist;
+import com.sun.source.doctree.TextTree;
 import de.ddm.actors.patterns.LargeMessageProxy;
 import de.ddm.serialization.AkkaSerializable;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 
-import java.util.Random;
-import java.util.Set;
+import java.util.*;
 
 public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message> {
 
@@ -40,7 +40,48 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 		private static final long serialVersionUID = -4667745204456518160L;
 		ActorRef<LargeMessageProxy.Message> dependencyMinerLargeMessageProxy;
 		int task;
+		//List<String> firstColumn;
+		//List<String> secondColumn;
+		//int firstColumnId;
+		//int secondColumnId;
 	}
+
+	@Getter
+	@NoArgsConstructor
+	@AllArgsConstructor
+	public static class TestMessage implements Message {
+		private static final long serialVersionUID = -4667745204456518160L;
+		ActorRef<LargeMessageProxy.Message> dependencyMinerLargeMessageProxy;
+		//int task;
+		List<String> firstColumn;
+		List<String> secondColumn;
+		int firstColumnId;
+		int secondColumnId;
+	}
+
+
+
+	@Getter
+	@NoArgsConstructor
+	@AllArgsConstructor
+	public static class SortTaskMessage implements Message {
+		//private static final long serialVersionUID???
+		ActorRef<LargeMessageProxy.Message> dependencyMinerLargeMessageProxy;
+		List<String> column;
+		int columnId;
+	}
+
+	/*
+	@Getter
+	@NoArgsConstructor
+	@AllArgsConstructor
+	public static class SortedListMessage implements Message {
+		//private static final long serialVersionUID???
+
+		HashMap<Integer,List<String>> sortedColumnContainer;
+	}
+
+	 */
 
 	////////////////////////
 	// Actor Construction //
@@ -59,6 +100,9 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 		context.getSystem().receptionist().tell(Receptionist.subscribe(DependencyMiner.dependencyMinerService, listingResponseAdapter));
 
 		this.largeMessageProxy = this.getContext().spawn(LargeMessageProxy.create(this.getContext().getSelf().unsafeUpcast()), LargeMessageProxy.DEFAULT_NAME);
+
+		this.sortedColumnContainer = new HashMap<>();
+
 	}
 
 	/////////////////
@@ -75,6 +119,8 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	public Receive<Message> createReceive() {
 		return newReceiveBuilder()
 				.onMessage(ReceptionistListingMessage.class, this::handle)
+				.onMessage(SortTaskMessage.class, this::handle)
+				.onMessage(TestMessage.class, this::handle)
 				.onMessage(TaskMessage.class, this::handle)
 				.build();
 	}
@@ -86,9 +132,60 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 		return this;
 	}
 
+	HashMap<Integer,List<String>> sortedColumnContainer;
+	int counter = 0;
+	private Behavior<Message> handle(SortTaskMessage message) {
+
+		List<String> unsortColumn = new ArrayList<>();
+		List<String> sortedColumn = new ArrayList<>();
+		int columnId = message.getColumnId();
+		unsortColumn = message.getColumn();
+		//Es sollen nur Anzahl columIds column sortiert werden. Wenn alle Columns sortiert sind, wird die Hashmap zurück gegeben.
+		if (columnId < 55) {
+			//Sort column
+			Collections.sort(unsortColumn);
+			sortedColumn = unsortColumn;
+
+			getContext().getLog().info("counter " + counter);
+			//Save sorted Column by columnId
+			sortedColumnContainer.put(columnId, sortedColumn);
+			counter++;
+		} else {
+			getContext().getLog().info("Jetzt sende ich es an die SortCompletionMessage");
+			LargeMessageProxy.LargeMessage sortCompletionMessage = new DependencyMiner.SortCompletionMessage(this.getContext().getSelf(), sortedColumnContainer);
+			this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(sortCompletionMessage, message.getDependencyMinerLargeMessageProxy()));
+		}
+
+		return this;
+	}
+
+
+	private Behavior<Message> handle(TestMessage message) {
+		this.getContext().getLog().info("TestMessage!");
+		// I should probably know how to solve this task, but for now I just pretend some work...
+
+		List<String> firstColumn = message.getFirstColumn();
+		List<String> secondColumn = message.getSecondColumn();
+
+		getContext().getLog().info("FirstColumn received " + Arrays.toString(firstColumn.toArray()));
+		getContext().getLog().info("SecondColumn received " + Arrays.toString(secondColumn.toArray()));
+		int result = 42;
+
+		return this;
+	}
 	private Behavior<Message> handle(TaskMessage message) {
+		/*
 		this.getContext().getLog().info("Working!");
 		// I should probably know how to solve this task, but for now I just pretend some work...
+
+		List<String> firstColumn = message.getFirstColumn();
+		List<String> secondColumn = message.getSecondColumn();
+
+		getContext().getLog().info("FirstColumn received " + Arrays.toString(firstColumn.toArray()));
+		getContext().getLog().info("SecondColumn received " + Arrays.toString(secondColumn.toArray()));
+		int result = 42;
+
+		 */
 
 		int result = message.getTask();
 		long time = System.currentTimeMillis();
