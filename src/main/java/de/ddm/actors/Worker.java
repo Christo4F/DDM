@@ -8,6 +8,7 @@ import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import de.ddm.actors.patterns.Reaper;
+import de.ddm.actors.profiling.DependencyCollector;
 import de.ddm.actors.profiling.DependencyWorker;
 import de.ddm.serialization.AkkaSerializable;
 import de.ddm.singletons.SystemConfigurationSingleton;
@@ -45,10 +46,15 @@ public class Worker extends AbstractBehavior<Worker.Message> {
 		Reaper.watchWithDefaultReaper(this.getContext().getSelf());
 
 		final int numWorkers = SystemConfigurationSingleton.get().getNumWorkers();
+		final int numCollectors = SystemConfigurationSingleton.get().getNumCollectors();
+
+		this.collectors = new ArrayList<>(numCollectors);
+		for (int id = 0; id < numCollectors; id++)
+			this.collectors.add(context.spawn(DependencyCollector.create(id), DependencyCollector.DEFAULT_NAME + "_" + id, DispatcherSelector.fromConfig("akka.worker-pool-dispatcher"))); //TODO modify Collector Dispatcher
 
 		this.workers = new ArrayList<>(numWorkers);
 		for (int id = 0; id < numWorkers; id++)
-			this.workers.add(context.spawn(DependencyWorker.create(), DependencyWorker.DEFAULT_NAME + "_" + id, DispatcherSelector.fromConfig("akka.worker-pool-dispatcher")));
+			this.workers.add(context.spawn(DependencyWorker.create(this.collectors), DependencyWorker.DEFAULT_NAME + "_" + id, DispatcherSelector.fromConfig("akka.worker-pool-dispatcher")));
 	}
 
 	/////////////////
@@ -56,6 +62,8 @@ public class Worker extends AbstractBehavior<Worker.Message> {
 	/////////////////
 
 	final List<ActorRef<DependencyWorker.Message>> workers;
+
+	final List<ActorRef<DependencyCollector.Message>> collectors;
 
 	////////////////////
 	// Actor Behavior //

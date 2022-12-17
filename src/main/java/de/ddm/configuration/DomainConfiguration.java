@@ -9,4 +9,7 @@ public class DomainConfiguration {
 
 	private final String resultCollectorOutputFileName = "results.txt";
 
+	private final int dependencyCollectorBatchSize = 10000;
+
+
 }

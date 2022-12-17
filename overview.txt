@@ -1,0 +1,51 @@
+TODO:
+columIds sinnvoll vergeben, sodass man sie im ResultCollector richtig zuordnen kann
+Versenden von LIsten muss ggf in mehreren Nachrichten erfolgen. Ggf kann man durch frühzeitiges Vergleichen unnötiges Versenden von Spaltenteilen vermeiden. Hierzu muss die DAtenstruktur evtl leicht geändert werden.
+
+InputReader:
+	bleibt wie er ist, liest row batches ein
+
+DependencyMiner:
+→ Messages:
+	BatchMessage: List<String[]> batch : (10.000) Zeilen einer Tabelle vom InputReader, int tableID
+	WorkerRegistrationMessage: ActorRef<DependencyWorker.Message> worker: neuer DependencyWorker registriert sich
+	CollectorRegistrationMessage: ActorRef<DependencyCollector.Message> collector: neuer DependencyCollector registriert sich
+	CompletationMessage: <ActorRef: DependencyWorker>: Dependency teilt mit, dass er die letzte erhaltene Batch an seinen DependencyCollector gesendet hat.
+	
+→ State:
+	List<List<String>> unassignedBatches: speichert alle Batches, die noch sortiert werden müssen
+	List<int> unsortedIds: Speichert die Table IDs der Batches in unassignedBatches. Muss immer gleiche Länge besitzen
+	List<ActorRef<DependencyWorker> idleDepencyWorker: Speichert die DependencyWorker ohne Aufgabe
+	List<ActorRef<DependencyWorker> busyDepencyWorker: Speichert die DependencyWorker mit Aufgabe
+	Boolean finalizeFlag;
+	
+→ Behavior:
+	on BatchMessage: Wenn es idleDepency Worker gibt, setze ihn auf Busy und sende TaskMessage. Falls nicht, schreibe Batch in unassignedBatches und unsortedIDs
+	on RegistrationMessage: Wenn es unassignedBatches gibt, dsende einen an den Worker und füge ihn zu busyWorker hinzu, andernfalls zu idleWorkers hinzufügen
+	on CompletationMessage: Falls alle Batches bearbeitet und inputReading beendet: Falls [!FinalizeFlag: Sende finalizeMessage an alle idle und busy Worker, setze FinalizeFlag.] Andernfalls: Sende Batch an Worker oder setze ihn in idleWorker
+	
+→ voids:
+	
+
+DependencyWorker:
+→ Messages:
+	TaskMassage: List<String[]> batch, int tableID. Aufgabe zum einsortieren der BatchDateien in eine Hash.
+	FinalizeMessage: Nachricht, dass der Worker keine neuen Aufgaben zu erwarten hat.
+	
+→ State:
+	ActorRef<DependencyCollector.Message>[] dependencyCollectors: Speichert alle dependencyCollector der gleichen Node
+	
+→ Behavior:
+	on TaskMessage: Generiert n HashMaps. Geht jeden Eintrag der Batch durch, merget ihn in eine der n HashMaps abhängig vom hashwert(modulo n). Sendet die generierten HashMaps als HashMapMessage an die dependencyCollectors
+	on FinalizeMessage: Sende FinalizedMessage an alle dependencyCollectors.
+	
+→ voids:
+	 
+	
+DependencyCollector:
+→ Messages:
+	HashMapMessage: HashMap<String><long // BigInteger> HashMap von DependencyWorker oder anderem DependencyCollector zum Einsortieren.
+	CompletationMessage: ActorRef<DependencyCollector>, int collectorID: benachrichtigung, dass letzte HashMapMessage bearbeitet wurde
+	FinalizedMessage: ActorRef<DependencyWorker>  
+	
+	

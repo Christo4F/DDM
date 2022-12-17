@@ -11,6 +11,7 @@ import akka.actor.typed.receptionist.Receptionist;
 import akka.actor.typed.receptionist.ServiceKey;
 import de.ddm.actors.patterns.LargeMessageProxy;
 import de.ddm.serialization.AkkaSerializable;
+import de.ddm.singletons.DomainConfigurationSingleton;
 import de.ddm.singletons.InputConfigurationSingleton;
 import de.ddm.singletons.SystemConfigurationSingleton;
 import de.ddm.structures.InclusionDependency;
@@ -20,6 +21,7 @@ import lombok.NoArgsConstructor;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Random;
 
@@ -61,6 +63,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	public static class RegistrationMessage implements Message {
 		private static final long serialVersionUID = -4025238529984914107L;
 		ActorRef<DependencyWorker.Message> dependencyWorker;
+		ActorRef<LargeMessageProxy.Message> largeMessageProxy;
 	}
 
 	@Getter
@@ -69,7 +72,15 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	public static class CompletionMessage implements Message {
 		private static final long serialVersionUID = -7642425159675583598L;
 		ActorRef<DependencyWorker.Message> dependencyWorker;
-		int result;
+	}
+
+	@Getter
+	@NoArgsConstructor
+	@AllArgsConstructor
+	public static class MergerResultMessage implements Message {
+		private static final long serialVersionUID = -7642425159675583598L;
+		ActorRef<DependencyMerger.Message> dependencyMerger;
+		boolean[][] result;
 	}
 
 	////////////////////////
@@ -89,6 +100,8 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		this.discoverNaryDependencies = SystemConfigurationSingleton.get().isHardMode();
 		this.inputFiles = InputConfigurationSingleton.get().getInputFiles();
 		this.headerLines = new String[this.inputFiles.length][];
+		this.shifts = new int[this.inputFiles.length];
+		this.inputReaderDone = new boolean[this.inputFiles.length];
 
 		this.inputReaders = new ArrayList<>(inputFiles.length);
 		for (int id = 0; id < this.inputFiles.length; id++)
@@ -96,7 +109,13 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		this.resultCollector = context.spawn(ResultCollector.create(), ResultCollector.DEFAULT_NAME);
 		this.largeMessageProxy = this.getContext().spawn(LargeMessageProxy.create(this.getContext().getSelf().unsafeUpcast()), LargeMessageProxy.DEFAULT_NAME);
 
-		this.dependencyWorkers = new ArrayList<>();
+		this.idleDependencyWorkers = new ArrayList<>();
+		this.busyDependencyWorkers = new ArrayList<>();
+		this.workerProxyHash = new HashMap<>();
+		this.taskContainer = new ArrayList<>();
+
+		this.mergers = new ArrayList<>(this.numCollectors);
+
 
 		context.getSystem().receptionist().tell(Receptionist.register(dependencyMinerService, context.getSelf()));
 	}
@@ -107,15 +126,34 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 	private long startTime;
 
+	private final int numCollectors = SystemConfigurationSingleton.get().getNumCollectors();
+
+	private int numColumns;
+
 	private final boolean discoverNaryDependencies;
 	private final File[] inputFiles;
 	private final String[][] headerLines;
+
+	private boolean finalizeFlag;
 
 	private final List<ActorRef<InputReader.Message>> inputReaders;
 	private final ActorRef<ResultCollector.Message> resultCollector;
 	private final ActorRef<LargeMessageProxy.Message> largeMessageProxy;
 
-	private final List<ActorRef<DependencyWorker.Message>> dependencyWorkers;
+	private final List<ActorRef<DependencyWorker.Message>> idleDependencyWorkers;
+	private final List<ActorRef<DependencyWorker.Message>> busyDependencyWorkers;
+
+	private final HashMap<ActorRef<DependencyWorker.Message>, ActorRef<LargeMessageProxy.Message>> workerProxyHash;
+
+	private final List<DependencyWorker.TaskMessage> taskContainer;
+
+	private final List<ActorRef<DependencyMerger.Message>> mergers;
+
+	private final int[] shifts;
+
+	private final boolean[] inputReaderDone;
+
+	private boolean[][] result;
 
 	////////////////////
 	// Actor Behavior //
@@ -129,6 +167,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 				.onMessage(HeaderMessage.class, this::handle)
 				.onMessage(RegistrationMessage.class, this::handle)
 				.onMessage(CompletionMessage.class, this::handle)
+				.onMessage(MergerResultMessage.class, this::handle)
 				.onSignal(Terminated.class, this::handle)
 				.build();
 	}
@@ -136,68 +175,139 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	private Behavior<Message> handle(StartMessage message) {
 		for (ActorRef<InputReader.Message> inputReader : this.inputReaders)
 			inputReader.tell(new InputReader.ReadHeaderMessage(this.getContext().getSelf()));
-		for (ActorRef<InputReader.Message> inputReader : this.inputReaders)
-			inputReader.tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
 		this.startTime = System.currentTimeMillis();
 		return this;
 	}
 
 	private Behavior<Message> handle(HeaderMessage message) {
+		int id = message.getId();
+		int shift = message.getHeader().length;
+		this.numColumns += shift;
+		for(int i = id + 1; i < this.shifts.length; i++){
+			shifts[i] += shift;
+		}
 		this.headerLines[message.getId()] = message.getHeader();
+		this.inputReaderDone[id] = true;
+		this.getContext().getLog().info("Finished header reading of File {}", id);
+		for(boolean b : this.inputReaderDone)
+			if(!b) return this;
+		this.getContext().getLog().info("Finished all header readings.", id);
+
+		for (int i = 0; i < this.numCollectors; i++)
+			this.mergers.add(this.getContext().spawn(DependencyMerger.create(i, this.getContext().getSelf(), this.numColumns), DependencyMerger.DEFAULT_NAME + "_" + i));
+
+		this.result = new boolean[this.numColumns][this.numColumns];
+		for(int i = 0; i < this.numColumns; i++)
+			for(int j = 0; j < this.numColumns; j++)
+				this.result[i][j] = true;
+
+		for (ActorRef<InputReader.Message> inputReader : this.inputReaders) {
+			inputReader.tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
+		}
 		return this;
 	}
 
 	private Behavior<Message> handle(BatchMessage message) {
-		// Ignoring batch content for now ... but I could do so much with it.
+		List<String[]> batch = message.getBatch();
+		int id = message.getId();
+		if(batch.size() == 0){
+			this.inputReaderDone[id] = false;
+			for(boolean b : this.inputReaderDone)
+				if(b) return this;
+			this.finalizeFlag = true;
+			if(!this.taskContainer.isEmpty())
+				return this;
+			for(ActorRef<DependencyWorker.Message> worker: this.idleDependencyWorkers)
+				worker.tell(new DependencyWorker.FinalizeMessage());
+			for(ActorRef<DependencyWorker.Message> worker: this.busyDependencyWorkers)
+				worker.tell(new DependencyWorker.FinalizeMessage());
+			return this;
+		}
 
-		if (message.getBatch().size() != 0)
-			this.inputReaders.get(message.getId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
+		DependencyWorker.TaskMessage task = new DependencyWorker.TaskMessage(this.getContext().getSelf(), batch, this.shifts[id]);
+		if(this.idleDependencyWorkers.isEmpty()) {
+			this.taskContainer.add(task);
+		}
+		else{
+			ActorRef<DependencyWorker.Message> dependencyWorker = this.idleDependencyWorkers.remove(0);
+			this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(task,this.workerProxyHash.get(dependencyWorker)));
+		}
+
+		this.inputReaders.get(message.getId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
 		return this;
 	}
 
 	private Behavior<Message> handle(RegistrationMessage message) {
 		ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
-		if (!this.dependencyWorkers.contains(dependencyWorker)) {
-			this.dependencyWorkers.add(dependencyWorker);
+		ActorRef<LargeMessageProxy.Message> workerProxy = message.getLargeMessageProxy();
+		if (!this.busyDependencyWorkers.contains(dependencyWorker) && !this.idleDependencyWorkers.contains(dependencyWorker)) {
+			this.workerProxyHash.put(dependencyWorker, workerProxy);
+			if(this.taskContainer.isEmpty())
+				this.idleDependencyWorkers.add(dependencyWorker);
+			else{
+				this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(this.taskContainer.remove(0),workerProxy));
+				this.busyDependencyWorkers.add(dependencyWorker);
+			}
 			this.getContext().watch(dependencyWorker);
-			// The worker should get some work ... let me send her something before I figure out what I actually want from her.
-			// I probably need to idle the worker for a while, if I do not have work for it right now ... (see master/worker pattern)
-
-			dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 42));
 		}
 		return this;
 	}
 
 	private Behavior<Message> handle(CompletionMessage message) {
 		ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
-		// If this was a reasonable result, I would probably do something with it and potentially generate more work ... for now, let's just generate a random, binary IND.
-
-		if (this.headerLines[0] != null) {
-			Random random = new Random();
-			int dependent = random.nextInt(this.inputFiles.length);
-			int referenced = random.nextInt(this.inputFiles.length);
-			File dependentFile = this.inputFiles[dependent];
-			File referencedFile = this.inputFiles[referenced];
-			String[] dependentAttributes = {this.headerLines[dependent][random.nextInt(this.headerLines[dependent].length)], this.headerLines[dependent][random.nextInt(this.headerLines[dependent].length)]};
-			String[] referencedAttributes = {this.headerLines[referenced][random.nextInt(this.headerLines[referenced].length)], this.headerLines[referenced][random.nextInt(this.headerLines[referenced].length)]};
-			InclusionDependency ind = new InclusionDependency(dependentFile, dependentAttributes, referencedFile, referencedAttributes);
-			List<InclusionDependency> inds = new ArrayList<>(1);
-			inds.add(ind);
-
-			this.resultCollector.tell(new ResultCollector.ResultMessage(inds));
+		if(this.taskContainer.isEmpty()){
+			this.busyDependencyWorkers.remove(dependencyWorker);
+			this.idleDependencyWorkers.add(dependencyWorker);
+			if(this.finalizeFlag){
+				for(ActorRef<DependencyWorker.Message> worker: this.idleDependencyWorkers)
+					worker.tell(new DependencyWorker.FinalizeMessage());
+				for(ActorRef<DependencyWorker.Message> worker: this.busyDependencyWorkers)
+					worker.tell(new DependencyWorker.FinalizeMessage());
+			}
+			return this;
 		}
-		// I still don't know what task the worker could help me to solve ... but let me keep her busy.
-		// Once I found all unary INDs, I could check if this.discoverNaryDependencies is set to true and try to detect n-ary INDs as well!
-
-		dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 42));
-
-		// At some point, I am done with the discovery. That is when I should call my end method. Because I do not work on a completable task yet, I simply call it after some time.
-		if (System.currentTimeMillis() - this.startTime > 2000000)
-			this.end();
+		this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(this.taskContainer.remove(0),this.workerProxyHash.get(dependencyWorker)));
+		this.getContext().getLog().info("Open tasks: {}", this.taskContainer.size());
 		return this;
 	}
 
+	private Behavior<Message> handle(MergerResultMessage message) {
+		boolean[][] mergerResult = message.getResult();
+		ActorRef<DependencyMerger.Message> dependencyMerger = message.getDependencyMerger();
+		for(int i = 0; i < this.numColumns; i++)
+			for(int j = 0; j < this.numColumns; j++)
+				this.result[i][j] = this.result[i][j] && mergerResult[i][j];
+		this.mergers.remove(dependencyMerger);
+		if(!this.mergers.isEmpty())
+			return this;
+
+		this.end();
+
+		return this;
+	}
+
+	private int findFileId(int columnId){
+		for(int fileId = 0; fileId < this.inputFiles.length - 1; fileId++){
+			if(this.shifts[fileId + 1] > columnId)
+				return fileId;
+		}
+		return this.inputFiles.length - 1;
+	}
+
 	private void end() {
+		List<InclusionDependency> dependencies = new ArrayList<>();
+		for(int i = 0; i < this.numColumns; i++){
+			for(int j = 0; j < this.numColumns; j++){
+				if(i == j) continue;
+				if(!this.result[i][j]) continue;
+				int fileIdI = this.findFileId(i);
+				int fileIdJ = this.findFileId(j);
+				int columnIdI = i - this.shifts[fileIdI];
+				int columnIdJ = j - this.shifts[fileIdJ];
+				dependencies.add(new InclusionDependency(this.inputFiles[fileIdI], new String[]{this.headerLines[fileIdI][columnIdI]}, this.inputFiles[fileIdJ], new String[]{this.headerLines[fileIdJ][columnIdJ]}));
+			}
+		}
+		this.resultCollector.tell(new ResultCollector.ResultMessage(dependencies));
 		this.resultCollector.tell(new ResultCollector.FinalizeMessage());
 		long discoveryTime = System.currentTimeMillis() - this.startTime;
 		this.getContext().getLog().info("Finished mining within {} ms!", discoveryTime);
@@ -205,7 +315,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 	private Behavior<Message> handle(Terminated signal) {
 		ActorRef<DependencyWorker.Message> dependencyWorker = signal.getRef().unsafeUpcast();
-		this.dependencyWorkers.remove(dependencyWorker);
+		this.getContext().getLog().error("Dependency Worker terminated, but no handling in Dependency Miner defined. Data may be lost.");
 		return this;
 	}
 }
