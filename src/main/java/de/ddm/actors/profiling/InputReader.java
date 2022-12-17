@@ -12,6 +12,7 @@ import com.opencsv.exceptions.CsvValidationException;
 import de.ddm.serialization.AkkaSerializable;
 import de.ddm.singletons.DomainConfigurationSingleton;
 import de.ddm.singletons.InputConfigurationSingleton;
+import de.ddm.structures.TableEntry;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -52,16 +53,21 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 
 	public static final String DEFAULT_NAME = "inputReader";
 
-	public static Behavior<Message> create(final int id, final File inputFile) {
-		return Behaviors.setup(context -> new InputReader(context, id, inputFile));
+	public static Behavior<Message> create(final int id, final File inputFile, final int numHashAreas) {
+		return Behaviors.setup(context -> new InputReader(context, id, inputFile, numHashAreas));
 	}
 
-	private InputReader(ActorContext<Message> context, final int id, final File inputFile) throws IOException, CsvValidationException {
+	private InputReader(ActorContext<Message> context, final int id, final File inputFile, final int numHashAreas) throws IOException, CsvValidationException {
 		super(context);
 		this.id = id;
 		this.reader = InputConfigurationSingleton.get().createCSVReader(inputFile);
 		this.header = InputConfigurationSingleton.get().getHeader(inputFile);
-		
+		this.numHashAreas = numHashAreas;
+
+		this.entries = new List[numHashAreas];
+		for(int i = 0; i < numHashAreas; i++)
+			entries[i] = new ArrayList<>();
+
 		if (InputConfigurationSingleton.get().isFileHasHeader())
 			this.reader.readNext();
 	}
@@ -72,8 +78,13 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 
 	private final int id;
 	private final int batchSize = DomainConfigurationSingleton.get().getInputReaderBatchSize();
+
+	public final int numHashAreas;
 	private final CSVReader reader;
 	private final String[] header;
+
+	private final List<TableEntry>[] entries;
+
 
 	////////////////////
 	// Actor Behavior //
@@ -94,15 +105,33 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 	}
 
 	private Behavior<Message> handle(ReadBatchMessage message) throws IOException, CsvValidationException {
-		List<String[]> batch = new ArrayList<>(this.batchSize);
-		for (int i = 0; i < this.batchSize; i++) {
+		boolean replySent = false;
+		while(true){
 			String[] line = this.reader.readNext();
-			if (line == null)
+			if(line == null)
 				break;
-			batch.add(line);
+
+			for(int i = 0; i < line.length; i++){
+				int hashAreaId = ((line[i].hashCode() % this.numHashAreas) + this.numHashAreas) % this.numHashAreas;
+				this.entries[hashAreaId].add(new TableEntry(line[i], i));
+				if(!replySent && this.entries[hashAreaId].size() > this.batchSize){
+					message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, hashAreaId, this.entries[hashAreaId]));
+					replySent = true;
+					this.entries[hashAreaId] = new ArrayList<>();
+				}
+			}
+			if(replySent)
+				return this;
 		}
 
-		message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, batch));
+		for(int i = 0; i < this.numHashAreas; i++){
+			if(this.entries[i].size() > 0){
+				message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, i, this.entries[i]));
+				this.entries[i] = new ArrayList<>();
+				return this;
+			}
+		}
+		message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, -1, null));
 		return this;
 	}
 

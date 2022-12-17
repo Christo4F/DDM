@@ -32,6 +32,8 @@ public class SystemConfiguration {
 
 	private boolean hardMode = false;					// Solve the hard version of the task
 
+	private int numHashAreas = 100;						// Number of different hashAreas used to distribute the task
+
 	private static String getDefaultHost() {
 		try {
 			return InetAddress.getLocalHost().getHostAddress();

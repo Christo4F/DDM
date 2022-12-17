@@ -14,6 +14,7 @@ import de.ddm.serialization.AkkaSerializable;
 import de.ddm.singletons.InputConfigurationSingleton;
 import de.ddm.singletons.SystemConfigurationSingleton;
 import de.ddm.structures.InclusionDependency;
+import de.ddm.structures.TableEntry;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -52,7 +53,8 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	public static class BatchMessage implements Message {
 		private static final long serialVersionUID = 4591192372652568030L;
 		int id;
-		List<String[]> batch;
+		int hashAreaId;
+		List<TableEntry> batch;
 	}
 
 	@Getter
@@ -87,12 +89,14 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	private DependencyMiner(ActorContext<Message> context) {
 		super(context);
 		this.discoverNaryDependencies = SystemConfigurationSingleton.get().isHardMode();
+		this.numHashAreas = SystemConfigurationSingleton.get().getNumHashAreas();
+
 		this.inputFiles = InputConfigurationSingleton.get().getInputFiles();
 		this.headerLines = new String[this.inputFiles.length][];
 
 		this.inputReaders = new ArrayList<>(inputFiles.length);
 		for (int id = 0; id < this.inputFiles.length; id++)
-			this.inputReaders.add(context.spawn(InputReader.create(id, this.inputFiles[id]), InputReader.DEFAULT_NAME + "_" + id));
+			this.inputReaders.add(context.spawn(InputReader.create(id, this.inputFiles[id], this.numHashAreas), InputReader.DEFAULT_NAME + "_" + id));
 		this.resultCollector = context.spawn(ResultCollector.create(), ResultCollector.DEFAULT_NAME);
 		this.largeMessageProxy = this.getContext().spawn(LargeMessageProxy.create(this.getContext().getSelf().unsafeUpcast()), LargeMessageProxy.DEFAULT_NAME);
 
@@ -116,6 +120,8 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	private final ActorRef<LargeMessageProxy.Message> largeMessageProxy;
 
 	private final List<ActorRef<DependencyWorker.Message>> dependencyWorkers;
+
+	private final int numHashAreas;
 
 	////////////////////
 	// Actor Behavior //
