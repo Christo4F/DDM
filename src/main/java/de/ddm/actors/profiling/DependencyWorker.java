@@ -9,7 +9,6 @@ import akka.actor.typed.javadsl.Receive;
 import akka.actor.typed.receptionist.Receptionist;
 import de.ddm.actors.patterns.LargeMessageProxy;
 import de.ddm.serialization.AkkaSerializable;
-import de.ddm.structures.TableEntry;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -17,7 +16,6 @@ import lombok.NoArgsConstructor;
 import java.math.BigInteger;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Random;
 import java.util.Set;
 
 public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message> {
@@ -42,9 +40,10 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	@AllArgsConstructor
 	public static class TaskMessage implements Message, LargeMessageProxy.LargeMessage {
 		private static final long serialVersionUID = -4667745204456518160L;
-		List<TableEntry> batch;
+		List<String> batch;
 		int fileShift;
 		int hashAreaId;
+		int columnId;
 		ActorRef<DependencyMiner.Message> dependencyMiner;
 	}
 
@@ -110,18 +109,17 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 		this.getContext().getLog().info("Working!");
 
 		int hashAreaId = message.getHashAreaId();
+		int columnId = message.getColumnId();
 		int fileShift = message.getFileShift();
 		if(this.hashAreaId != hashAreaId)
 			this.hashMap = new HashMap<>();
 		this.hashAreaId = hashAreaId;
 
-		List<TableEntry> batch = message.getBatch();
+		List<String> batch = message.getBatch();
+		BigInteger representation = BigInteger.ONE.shiftLeft(fileShift + columnId);
 
-		for(TableEntry e : batch){
-			String value = e.getValue();
-			int column = e.getColumn();
-			BigInteger representation = BigInteger.ONE.shiftLeft(fileShift + column);
-			this.hashMap.merge(value, representation, (rep1,rep2) -> rep1.or(rep2));
+		for(String s : batch){
+			this.hashMap.merge(s, representation, (rep1,rep2) -> rep1.or(rep2));
 		}
 
 		message.getDependencyMiner().tell(new DependencyMiner.CompletionMessage(this.getContext().getSelf(), hashAreaId));
@@ -129,6 +127,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	}
 
 	private Behavior<Message> handle(SendResultsMessage message) {
+		this.getContext().getLog().info("Sending results...");
 		int numColumns = message.getNumColumns();
 		boolean[][] result = new boolean[numColumns][numColumns];
 		for(int i = 0; i < numColumns; i++){

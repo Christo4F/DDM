@@ -14,7 +14,6 @@ import de.ddm.serialization.AkkaSerializable;
 import de.ddm.singletons.InputConfigurationSingleton;
 import de.ddm.singletons.SystemConfigurationSingleton;
 import de.ddm.structures.InclusionDependency;
-import de.ddm.structures.TableEntry;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -23,7 +22,6 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Random;
 
 public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
@@ -53,9 +51,10 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	@AllArgsConstructor
 	public static class BatchMessage implements Message {
 		private static final long serialVersionUID = 4591192372652568030L;
-		int id;
+		int fileId;
 		int hashAreaId;
-		List<TableEntry> batch;
+		int columnId;
+		List<String> batch;
 	}
 
 	@Getter
@@ -228,9 +227,10 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 	private Behavior<Message> handle(BatchMessage message) {
 
-		List<TableEntry> batch = message.getBatch();
+		List<String> batch = message.getBatch();
 		int hashAreaId = message.getHashAreaId();
-		int fileId = message.getId();
+		int fileId = message.getFileId();
+		int columnId = message.getColumnId();
 
 		if(batch == null){
 			this.inputReaderFinishedFlag[fileId] = true;
@@ -246,20 +246,20 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 			return this;
 		}
 
-		DependencyWorker.TaskMessage task = new DependencyWorker.TaskMessage(batch, this.shifts[fileId], hashAreaId, this.getContext().getSelf()); //TODO: FileShift
+		DependencyWorker.TaskMessage task = new DependencyWorker.TaskMessage(batch, this.shifts[fileId], hashAreaId, columnId, this.getContext().getSelf());
 
-		if(this.waitingDependencyWorkers.containsKey(new Integer(hashAreaId))){
+		if(this.waitingDependencyWorkers.containsKey(hashAreaId)){
 			ActorRef<DependencyWorker.Message> dependencyWorker = this.waitingDependencyWorkers.get(new Integer(hashAreaId));
 
 			this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(task, this.workerProxys.get(dependencyWorker)));
-			this.waitingDependencyWorkers.remove(dependencyWorker);
-			this.busyDependencyWorkers.put(new Integer(hashAreaId), dependencyWorker);
+			this.waitingDependencyWorkers.remove(hashAreaId);
+			this.busyDependencyWorkers.put(hashAreaId, dependencyWorker);
 		}
 		else{
 			this.unassignedTasksByHashAreaId[hashAreaId].add(task);
 			this.getContext().getLog().info("Open Tasks on HashArea " + hashAreaId + " is " + this.unassignedTasksByHashAreaId[hashAreaId].size());
 		}
-		this.inputReaders.get(message.getId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
+		this.inputReaders.get(message.getFileId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
 		return this;
 	}
 
@@ -273,12 +273,12 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 				int hashAreaId = this.unassignedHashIds.remove(0);
 				if(this.unassignedTasksByHashAreaId[hashAreaId].isEmpty()){
 					if(!this.inputFinishedFlag){
-						this.waitingDependencyWorkers.put(new Integer(hashAreaId), dependencyWorker);
+						this.waitingDependencyWorkers.put(hashAreaId, dependencyWorker);
 						return this;
 					}
 				}
 				else{
-					this.busyDependencyWorkers.put(new Integer(hashAreaId), dependencyWorker);
+					this.busyDependencyWorkers.put(hashAreaId, dependencyWorker);
 					DependencyWorker.TaskMessage task = this.unassignedTasksByHashAreaId[hashAreaId].remove(0);
 					this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(task, this.workerProxys.get(dependencyWorker)));
 					return this;
@@ -302,8 +302,8 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		}
 
 		if(!this.inputFinishedFlag){
-			this.busyDependencyWorkers.remove(new Integer(hashAreaId));
-			this.waitingDependencyWorkers.put(new Integer(hashAreaId), dependencyWorker);
+			this.busyDependencyWorkers.remove(hashAreaId);
+			this.waitingDependencyWorkers.put(hashAreaId, dependencyWorker);
 			return this;
 		}
 
@@ -313,25 +313,23 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	}
 
 	private Behavior<Message> handle(ResultMessage message) {
+		this.getContext().getLog().info("Received result of hashArea {}. Unassigned Hash Ids: " + this.unassignedHashIds.size() +", busy: " + this.busyDependencyWorkers.size() +", waiting: " + this.waitingDependencyWorkers.size(), message.getHashAreaId());
 		boolean[][] workerResult = message.getResult();
 		ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
 		int hashAreaId = message.getHashAreaId();
 
-		for(int i = 0; i < this.numColumns; i++)
-			for(int j = 0; j < this.numColumns; j++)
-				this.result[i][j] = this.result[i][j] && workerResult[i][j];
-
-		this.busyDependencyWorkers.remove(new Integer(hashAreaId));
-		this.waitingDependencyWorkers.remove(new Integer(hashAreaId));
+		this.busyDependencyWorkers.remove(hashAreaId);
+		this.waitingDependencyWorkers.remove(hashAreaId);
 
 		while(!this.unassignedHashIds.isEmpty()){
 			int newHashAreaId = this.unassignedHashIds.remove(0);
 			if(this.unassignedTasksByHashAreaId[newHashAreaId].isEmpty())
 				continue;
 
-			this.busyDependencyWorkers.put(new Integer(newHashAreaId), dependencyWorker);
-			DependencyWorker.TaskMessage task = this.unassignedTasksByHashAreaId[hashAreaId].remove(0);
+			this.busyDependencyWorkers.put(newHashAreaId, dependencyWorker);
+			DependencyWorker.TaskMessage task = this.unassignedTasksByHashAreaId[newHashAreaId].remove(0);
 			this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(task, this.workerProxys.get(dependencyWorker)));
+			mergeResult(workerResult);
 			return this;
 		}
 
@@ -340,8 +338,14 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		if(this.busyDependencyWorkers.isEmpty() && this.waitingDependencyWorkers.isEmpty()){
 			this.end();
 		}
-
+		mergeResult(workerResult);
 		return this;
+	}
+
+	private void mergeResult(boolean[][] workerResult){
+		for(int i = 0; i < this.numColumns; i++)
+			for(int j = 0; j < this.numColumns; j++)
+				this.result[i][j] = this.result[i][j] && workerResult[i][j];
 	}
 
 	private void end() {

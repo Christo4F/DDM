@@ -12,7 +12,6 @@ import com.opencsv.exceptions.CsvValidationException;
 import de.ddm.serialization.AkkaSerializable;
 import de.ddm.singletons.DomainConfigurationSingleton;
 import de.ddm.singletons.InputConfigurationSingleton;
-import de.ddm.structures.TableEntry;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -64,9 +63,12 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 		this.header = InputConfigurationSingleton.get().getHeader(inputFile);
 		this.numHashAreas = numHashAreas;
 
-		this.entries = new List[numHashAreas];
-		for(int i = 0; i < numHashAreas; i++)
-			entries[i] = new ArrayList<>();
+		this.entries = new List[this.numHashAreas][this.header.length];
+		for(List<String>[] hashAreaLists : entries){
+			for(int i = 0; i < this.header.length; i++){
+				hashAreaLists[i] = new ArrayList<>();
+			}
+		}
 
 		if (InputConfigurationSingleton.get().isFileHasHeader())
 			this.reader.readNext();
@@ -83,7 +85,7 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 	private final CSVReader reader;
 	private final String[] header;
 
-	private final List<TableEntry>[] entries;
+	private final List<String>[][] entries;
 
 
 	////////////////////
@@ -111,13 +113,13 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 			if(line == null)
 				break;
 
-			for(int i = 0; i < line.length; i++){
-				int hashAreaId = ((line[i].hashCode() % this.numHashAreas) + this.numHashAreas) % this.numHashAreas;
-				this.entries[hashAreaId].add(new TableEntry(line[i], i));
-				if(!replySent && this.entries[hashAreaId].size() > this.batchSize){
-					message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, hashAreaId, this.entries[hashAreaId]));
+			for(int columnId = 0; columnId < line.length; columnId++){
+				int hashAreaId = ((line[columnId].hashCode() % this.numHashAreas) + this.numHashAreas) % this.numHashAreas;
+				this.entries[hashAreaId][columnId].add(line[columnId]);
+				if(!replySent && this.entries[hashAreaId][columnId].size() > this.batchSize){
+					message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, hashAreaId, columnId, this.entries[hashAreaId][columnId]));
 					replySent = true;
-					this.entries[hashAreaId] = new ArrayList<>();
+					this.entries[hashAreaId][columnId] = new ArrayList<>();
 				}
 			}
 			if(replySent)
@@ -125,13 +127,15 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 		}
 
 		for(int i = 0; i < this.numHashAreas; i++){
-			if(this.entries[i].size() > 0){
-				message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, i, this.entries[i]));
-				this.entries[i] = new ArrayList<>();
-				return this;
+			for(int columnId = 0; columnId < this.header.length; columnId++){
+				if(this.entries[i][columnId].size() > 0){
+					message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, i, columnId, this.entries[i][columnId]));
+					this.entries[i][columnId] = new ArrayList<>();
+					return this;
+				}
 			}
 		}
-		message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, -1, null));
+		message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, -1, -1, null));
 		return this;
 	}
 
