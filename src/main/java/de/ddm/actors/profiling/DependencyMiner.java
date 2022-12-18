@@ -21,6 +21,7 @@ import lombok.NoArgsConstructor;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Random;
 
@@ -63,6 +64,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	public static class RegistrationMessage implements Message {
 		private static final long serialVersionUID = -4025238529984914107L;
 		ActorRef<DependencyWorker.Message> dependencyWorker;
+		ActorRef<LargeMessageProxy.Message> workerProxy;
 	}
 
 	@Getter
@@ -71,7 +73,17 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	public static class CompletionMessage implements Message {
 		private static final long serialVersionUID = -7642425159675583598L;
 		ActorRef<DependencyWorker.Message> dependencyWorker;
-		int result;
+		int hashAreaId;
+	}
+
+	@Getter
+	@NoArgsConstructor
+	@AllArgsConstructor
+	public static class ResultMessage implements Message {
+		private static final long serialVersionUID = -7642425159675583598L;
+		ActorRef<DependencyWorker.Message> dependencyWorker;
+		int hashAreaId;
+		boolean[][] result;
 	}
 
 	////////////////////////
@@ -90,17 +102,30 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		super(context);
 		this.discoverNaryDependencies = SystemConfigurationSingleton.get().isHardMode();
 		this.numHashAreas = SystemConfigurationSingleton.get().getNumHashAreas();
+		this.unassignedTasksByHashAreaId = new List[this.numHashAreas];
+		this.unassignedHashIds = new ArrayList<>();
+
+		for(int i = 0; i < this.numHashAreas; i++){
+			this.unassignedTasksByHashAreaId[i] = new ArrayList<>();
+			this.unassignedHashIds.add(new Integer(i));
+		}
 
 		this.inputFiles = InputConfigurationSingleton.get().getInputFiles();
 		this.headerLines = new String[this.inputFiles.length][];
+		this.shifts = new int[this.inputFiles.length];
+		this.headerReadDone = new boolean[this.inputFiles.length];
 
 		this.inputReaders = new ArrayList<>(inputFiles.length);
+		this.inputReaderFinishedFlag = new boolean[inputFiles.length];
 		for (int id = 0; id < this.inputFiles.length; id++)
 			this.inputReaders.add(context.spawn(InputReader.create(id, this.inputFiles[id], this.numHashAreas), InputReader.DEFAULT_NAME + "_" + id));
 		this.resultCollector = context.spawn(ResultCollector.create(), ResultCollector.DEFAULT_NAME);
 		this.largeMessageProxy = this.getContext().spawn(LargeMessageProxy.create(this.getContext().getSelf().unsafeUpcast()), LargeMessageProxy.DEFAULT_NAME);
 
-		this.dependencyWorkers = new ArrayList<>();
+		this.idleDependencyWorkers = new ArrayList<>();
+		this.busyDependencyWorkers = new HashMap<>();
+		this.waitingDependencyWorkers = new HashMap<>();
+		this.workerProxys = new HashMap<>();
 
 		context.getSystem().receptionist().tell(Receptionist.register(dependencyMinerService, context.getSelf()));
 	}
@@ -119,13 +144,37 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	private final ActorRef<ResultCollector.Message> resultCollector;
 	private final ActorRef<LargeMessageProxy.Message> largeMessageProxy;
 
-	private final List<ActorRef<DependencyWorker.Message>> dependencyWorkers;
+	private final List<ActorRef<DependencyWorker.Message>> idleDependencyWorkers;
+
+	private final HashMap<Integer, ActorRef<DependencyWorker.Message>> busyDependencyWorkers;
+
+	private final HashMap<Integer, ActorRef<DependencyWorker.Message>> waitingDependencyWorkers;
+
+	private final HashMap<ActorRef<DependencyWorker.Message>, ActorRef<LargeMessageProxy.Message>> workerProxys;
 
 	private final int numHashAreas;
+
+	private final List<DependencyWorker.TaskMessage>[] unassignedTasksByHashAreaId;
+
+	private final List<Integer> unassignedHashIds;
+
+	private final boolean[] inputReaderFinishedFlag;
+
+	private boolean inputFinishedFlag = false;
+
+	private final boolean[] headerReadDone;
+
+	private boolean[][] result;
+
+	private int numColumns = 0;
+
+	private final int[] shifts;
 
 	////////////////////
 	// Actor Behavior //
 	////////////////////
+
+	//TODO Use Autoboxing for new Integer(i) terms
 
 	@Override
 	public Receive<Message> createReceive() {
@@ -142,76 +191,188 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	private Behavior<Message> handle(StartMessage message) {
 		for (ActorRef<InputReader.Message> inputReader : this.inputReaders)
 			inputReader.tell(new InputReader.ReadHeaderMessage(this.getContext().getSelf()));
-		for (ActorRef<InputReader.Message> inputReader : this.inputReaders)
-			inputReader.tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
 		this.startTime = System.currentTimeMillis();
 		return this;
 	}
 
 	private Behavior<Message> handle(HeaderMessage message) {
 		this.headerLines[message.getId()] = message.getHeader();
+		int id = message.getId();
+		int shift = message.getHeader().length;
+		this.numColumns += shift;
+
+		for(int i = id + 1; i < this.shifts.length; i++){
+			shifts[i] += shift;
+		}
+
+		this.headerReadDone[id] = true;
+		this.getContext().getLog().info("Finished header reading of File {}", id);
+		for(boolean b : this.headerReadDone)
+			if(!b) return this;
+
+		this.getContext().getLog().info("Finished all header readings.");
+
+
+		this.result = new boolean[this.numColumns][this.numColumns];
+		for(int i = 0; i < this.numColumns; i++)
+			for(int j = 0; j < this.numColumns; j++)
+				this.result[i][j] = true;
+
+		for (ActorRef<InputReader.Message> inputReader : this.inputReaders) {
+			inputReader.tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
+		}
+
 		return this;
 	}
 
 	private Behavior<Message> handle(BatchMessage message) {
-		// Ignoring batch content for now ... but I could do so much with it.
 
-		if (message.getBatch().size() != 0)
-			this.inputReaders.get(message.getId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
+		List<TableEntry> batch = message.getBatch();
+		int hashAreaId = message.getHashAreaId();
+		int fileId = message.getId();
+
+		if(batch == null){
+			this.inputReaderFinishedFlag[fileId] = true;
+			this.inputFinishedFlag = true;
+			for(boolean b : this.inputReaderFinishedFlag)
+				this.inputFinishedFlag = this.inputFinishedFlag && b;
+			if(!this.inputFinishedFlag)
+				return this;
+
+			for(ActorRef<DependencyWorker.Message> waitingWorker : this.waitingDependencyWorkers.values()){
+				waitingWorker.tell(new DependencyWorker.SendResultsMessage());
+			}
+			return this;
+		}
+
+		DependencyWorker.TaskMessage task = new DependencyWorker.TaskMessage(batch, this.shifts[hashAreaId], hashAreaId, this.getContext().getSelf()); //TODO: FileShift
+
+		if(this.waitingDependencyWorkers.containsKey(new Integer(hashAreaId))){
+			ActorRef<DependencyWorker.Message> dependencyWorker = this.waitingDependencyWorkers.get(new Integer(hashAreaId));
+
+			this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(task, this.workerProxys.get(dependencyWorker)));
+			this.waitingDependencyWorkers.remove(dependencyWorker);
+			this.busyDependencyWorkers.put(new Integer(hashAreaId), dependencyWorker);
+		}
+		else{
+			this.unassignedTasksByHashAreaId[hashAreaId].add(task);
+		}
+		this.inputReaders.get(message.getId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
 		return this;
 	}
 
 	private Behavior<Message> handle(RegistrationMessage message) {
 		ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
-		if (!this.dependencyWorkers.contains(dependencyWorker)) {
-			this.dependencyWorkers.add(dependencyWorker);
+		if (!this.waitingDependencyWorkers.values().contains(dependencyWorker) && !this.busyDependencyWorkers.values().contains(dependencyWorker) && !this.idleDependencyWorkers.contains(dependencyWorker)) {
 			this.getContext().watch(dependencyWorker);
-			// The worker should get some work ... let me send her something before I figure out what I actually want from her.
-			// I probably need to idle the worker for a while, if I do not have work for it right now ... (see master/worker pattern)
+			this.workerProxys.put(dependencyWorker, message.getWorkerProxy());
 
-			dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 42));
+			while(!this.unassignedHashIds.isEmpty()){
+				int hashAreaId = this.unassignedHashIds.remove(0);
+				if(this.unassignedTasksByHashAreaId[hashAreaId].isEmpty()){
+					if(!this.inputFinishedFlag){
+						this.waitingDependencyWorkers.put(new Integer(hashAreaId), dependencyWorker);
+						return this;
+					}
+				}
+				else{
+					this.busyDependencyWorkers.put(new Integer(hashAreaId), dependencyWorker);
+					DependencyWorker.TaskMessage task = this.unassignedTasksByHashAreaId[hashAreaId].remove(0);
+					this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(task, this.workerProxys.get(dependencyWorker)));
+					return this;
+				}
+			}
+
+			this.idleDependencyWorkers.add(dependencyWorker);
+			return this;
 		}
 		return this;
 	}
 
 	private Behavior<Message> handle(CompletionMessage message) {
 		ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
-		// If this was a reasonable result, I would probably do something with it and potentially generate more work ... for now, let's just generate a random, binary IND.
+		int hashAreaId = message.getHashAreaId();
 
-		if (this.headerLines[0] != null) {
-			Random random = new Random();
-			int dependent = random.nextInt(this.inputFiles.length);
-			int referenced = random.nextInt(this.inputFiles.length);
-			File dependentFile = this.inputFiles[dependent];
-			File referencedFile = this.inputFiles[referenced];
-			String[] dependentAttributes = {this.headerLines[dependent][random.nextInt(this.headerLines[dependent].length)], this.headerLines[dependent][random.nextInt(this.headerLines[dependent].length)]};
-			String[] referencedAttributes = {this.headerLines[referenced][random.nextInt(this.headerLines[referenced].length)], this.headerLines[referenced][random.nextInt(this.headerLines[referenced].length)]};
-			InclusionDependency ind = new InclusionDependency(dependentFile, dependentAttributes, referencedFile, referencedAttributes);
-			List<InclusionDependency> inds = new ArrayList<>(1);
-			inds.add(ind);
-
-			this.resultCollector.tell(new ResultCollector.ResultMessage(inds));
+		if(!this.unassignedTasksByHashAreaId[hashAreaId].isEmpty()){
+			DependencyWorker.TaskMessage task = this.unassignedTasksByHashAreaId[hashAreaId].remove(0);
+			this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(task, this.workerProxys.get(dependencyWorker)));
+			return this;
 		}
-		// I still don't know what task the worker could help me to solve ... but let me keep her busy.
-		// Once I found all unary INDs, I could check if this.discoverNaryDependencies is set to true and try to detect n-ary INDs as well!
 
-		dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 42));
+		if(!this.inputFinishedFlag){
+			this.busyDependencyWorkers.remove(new Integer(hashAreaId));
+			this.waitingDependencyWorkers.put(new Integer(hashAreaId), dependencyWorker);
+			return this;
+		}
 
-		// At some point, I am done with the discovery. That is when I should call my end method. Because I do not work on a completable task yet, I simply call it after some time.
-		if (System.currentTimeMillis() - this.startTime > 2000000)
+		dependencyWorker.tell(new DependencyWorker.SendResultsMessage());
+		return this;
+
+	}
+
+	private Behavior<Message> handle(ResultMessage message) {
+		boolean[][] workerResult = message.getResult();
+		ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
+		int hashAreaId = message.getHashAreaId();
+
+		for(int i = 0; i < this.numColumns; i++)
+			for(int j = 0; j < this.numColumns; j++)
+				this.result[i][j] = this.result[i][j] && workerResult[i][j];
+
+		this.busyDependencyWorkers.remove(new Integer(hashAreaId));
+		this.waitingDependencyWorkers.remove(new Integer(hashAreaId));
+
+		while(!this.unassignedHashIds.isEmpty()){
+			int newHashAreaId = this.unassignedHashIds.remove(0);
+			if(this.unassignedTasksByHashAreaId[newHashAreaId].isEmpty())
+				continue;
+
+			this.busyDependencyWorkers.put(new Integer(newHashAreaId), dependencyWorker);
+			DependencyWorker.TaskMessage task = this.unassignedTasksByHashAreaId[hashAreaId].remove(0);
+			this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(task, this.workerProxys.get(dependencyWorker)));
+			return this;
+		}
+
+		this.idleDependencyWorkers.add(dependencyWorker);
+
+		if(this.busyDependencyWorkers.isEmpty() && this.waitingDependencyWorkers.isEmpty()){
 			this.end();
+		}
+
 		return this;
 	}
 
 	private void end() {
+		List<InclusionDependency> dependencies = new ArrayList<>();
+		for(int i = 0; i < this.numColumns; i++){
+			for(int j = 0; j < this.numColumns; j++){
+				if(i == j) continue;
+				if(!this.result[i][j]) continue;
+				int fileIdI = this.findFileId(i);
+				int fileIdJ = this.findFileId(j);
+				int columnIdI = i - this.shifts[fileIdI];
+				int columnIdJ = j - this.shifts[fileIdJ];
+				dependencies.add(new InclusionDependency(this.inputFiles[fileIdI], new String[]{this.headerLines[fileIdI][columnIdI]}, this.inputFiles[fileIdJ], new String[]{this.headerLines[fileIdJ][columnIdJ]}));
+			}
+		}
+		this.resultCollector.tell(new ResultCollector.ResultMessage(dependencies));
 		this.resultCollector.tell(new ResultCollector.FinalizeMessage());
 		long discoveryTime = System.currentTimeMillis() - this.startTime;
 		this.getContext().getLog().info("Finished mining within {} ms!", discoveryTime);
 	}
 
+	private int findFileId(int columnId){
+		for(int fileId = 0; fileId < this.inputFiles.length - 1; fileId++){
+			if(this.shifts[fileId + 1] > columnId)
+				return fileId;
+		}
+		return this.inputFiles.length - 1;
+	}
+
+
 	private Behavior<Message> handle(Terminated signal) {
 		ActorRef<DependencyWorker.Message> dependencyWorker = signal.getRef().unsafeUpcast();
-		this.dependencyWorkers.remove(dependencyWorker);
+		this.getContext().getLog().error("Unhandled DependencyWorker Termination.");
 		return this;
 	}
 }

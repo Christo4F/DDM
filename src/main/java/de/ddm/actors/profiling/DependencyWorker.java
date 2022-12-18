@@ -9,10 +9,12 @@ import akka.actor.typed.javadsl.Receive;
 import akka.actor.typed.receptionist.Receptionist;
 import de.ddm.actors.patterns.LargeMessageProxy;
 import de.ddm.serialization.AkkaSerializable;
+import de.ddm.structures.TableEntry;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
 import java.util.Random;
 import java.util.Set;
 
@@ -22,7 +24,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	// Actor Messages //
 	////////////////////
 
-	public interface Message extends AkkaSerializable {
+	public interface Message extends AkkaSerializable, LargeMessageProxy.Message {
 	}
 
 	@Getter
@@ -36,10 +38,20 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	@Getter
 	@NoArgsConstructor
 	@AllArgsConstructor
-	public static class TaskMessage implements Message {
+	public static class TaskMessage implements Message, LargeMessageProxy.LargeMessage {
+		private static final long serialVersionUID = -4667745204456518160L;
+		List<TableEntry> batch;
+		int fileShift;
+		int hashAreaId;
+		ActorRef<DependencyMiner.Message> dependencyMiner;
+	}
+
+	@Getter
+	@NoArgsConstructor
+	@AllArgsConstructor
+	public static class SendResultsMessage implements Message {
 		private static final long serialVersionUID = -4667745204456518160L;
 		ActorRef<LargeMessageProxy.Message> dependencyMinerLargeMessageProxy;
-		int task;
 	}
 
 	////////////////////////
@@ -82,7 +94,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	private Behavior<Message> handle(ReceptionistListingMessage message) {
 		Set<ActorRef<DependencyMiner.Message>> dependencyMiners = message.getListing().getServiceInstances(DependencyMiner.dependencyMinerService);
 		for (ActorRef<DependencyMiner.Message> dependencyMiner : dependencyMiners)
-			dependencyMiner.tell(new DependencyMiner.RegistrationMessage(this.getContext().getSelf()));
+			dependencyMiner.tell(new DependencyMiner.RegistrationMessage(this.getContext().getSelf(), this.largeMessageProxy));
 		return this;
 	}
 
@@ -90,15 +102,6 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 		this.getContext().getLog().info("Working!");
 		// I should probably know how to solve this task, but for now I just pretend some work...
 
-		int result = message.getTask();
-		long time = System.currentTimeMillis();
-		Random rand = new Random();
-		int runtime = (rand.nextInt(2) + 2) * 1000;
-		while (System.currentTimeMillis() - time < runtime)
-			result = ((int) Math.abs(Math.sqrt(result)) * result) % 1334525;
-
-		LargeMessageProxy.LargeMessage completionMessage = new DependencyMiner.CompletionMessage(this.getContext().getSelf(), result);
-		this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(completionMessage, message.getDependencyMinerLargeMessageProxy()));
 
 		return this;
 	}
