@@ -32,9 +32,21 @@ public class ResultCollector extends AbstractBehavior<ResultCollector.Message> {
 	@Getter
 	@NoArgsConstructor
 	@AllArgsConstructor
+	public static class TestResultMessage implements Message {
+		//private static final long serialVersionUID = -7070569202900845736L;
+		//List<InclusionDependency> inclusionDependencies;
+		int column1;
+		int column2;
+	}
+
+	@Getter
+	@NoArgsConstructor
+	@AllArgsConstructor
 	public static class ResultMessage implements Message {
 		private static final long serialVersionUID = -7070569202900845736L;
 		List<InclusionDependency> inclusionDependencies;
+		boolean oneInTwo;
+		boolean twoInOne;
 	}
 
 	@NoArgsConstructor
@@ -85,6 +97,9 @@ public class ResultCollector extends AbstractBehavior<ResultCollector.Message> {
 
 	private Behavior<Message> handle(ResultMessage message) throws IOException {
 		this.getContext().getLog().info("Received {} INDs!", message.getInclusionDependencies().size());
+
+		//todo Hier soll ein Array mit den boolean erhalten werden
+		this.getContext().getLog().info("Received " + message.oneInTwo + " und " + message.twoInOne);
 
 		for (InclusionDependency ind : message.getInclusionDependencies()) {
 			this.writer.write(ind.toString());

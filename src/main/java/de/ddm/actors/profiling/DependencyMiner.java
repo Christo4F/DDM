@@ -19,9 +19,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 
 import java.io.File;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Random;
+import java.util.*;
 
 public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
@@ -70,6 +68,32 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		private static final long serialVersionUID = -7642425159675583598L;
 		ActorRef<DependencyWorker.Message> dependencyWorker;
 		int result;
+		int columnId1;
+		int columnId2;
+		boolean oneInTwo;
+		boolean twoInOne;
+
+	}
+
+	@Getter
+	@NoArgsConstructor
+	@AllArgsConstructor
+	public static class SortCompletionMessage implements Message{
+		//private static final long serialVersionUID = -7642425159675583598L;
+		ActorRef<DependencyWorker.Message> dependencyWorker;
+		HashMap<Integer, List<String>> sortedColumnContainer;
+	}
+
+	@Getter
+	@NoArgsConstructor
+	@AllArgsConstructor
+	public static class CompareCompletionMessage implements Message{
+		//private static final long serialVersionUID = -7642425159675583598L; ???
+		ActorRef<DependencyWorker.Message> dependencyWorker;
+		int columnId1;
+		int columnId2;
+		boolean oneInTwo;
+		boolean twoInOne;
 	}
 
 	////////////////////////
@@ -97,6 +121,14 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		this.largeMessageProxy = this.getContext().spawn(LargeMessageProxy.create(this.getContext().getSelf().unsafeUpcast()), LargeMessageProxy.DEFAULT_NAME);
 
 		this.dependencyWorkers = new ArrayList<>();
+
+
+		this.batchMessages = new ArrayList<>();
+		this.readInputFiles = new ArrayList<>();
+		this.unSortedColumns = new ArrayList<>();
+		this.unsortedIds = new ArrayList<>();
+		this.numberOfColumns = new ArrayList<>();
+		this.sortedColumnContainer = new HashMap<>();
 
 		context.getSystem().receptionist().tell(Receptionist.register(dependencyMinerService, context.getSelf()));
 	}
@@ -129,6 +161,8 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 				.onMessage(HeaderMessage.class, this::handle)
 				.onMessage(RegistrationMessage.class, this::handle)
 				.onMessage(CompletionMessage.class, this::handle)
+				.onMessage(CompareCompletionMessage.class, this::handle)
+				.onMessage(SortCompletionMessage.class, this::handle)
 				.onSignal(Terminated.class, this::handle)
 				.build();
 	}
@@ -147,12 +181,71 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		return this;
 	}
 
+	ArrayList<BatchMessage> batchMessages;
+	ArrayList<Integer> readInputFiles;
+	List<ArrayList<String>> unSortedColumns;
+	List<Integer> unsortedIds;
+	int idCounter = 0;
+	List<Integer> numberOfColumns;
 	private Behavior<Message> handle(BatchMessage message) {
 		// Ignoring batch content for now ... but I could do so much with it.
 
-		if (message.getBatch().size() != 0)
+		//this.getContext().getLog().info("File NR.{} and batches size {}", message.id, message.batch.size());
+		//only adding column that hasn't been added before
+		if (readInputFiles.size() < inputFiles.length){
+			if (!readInputFiles.contains(message.id)) {
+				readInputFiles.add(message.id);
+				for (int i = 0; i < message.getBatch().get(0).length; i++){
+					ArrayList<String> column = new ArrayList<>();
+					for (int j = 0; j < message.getBatch().size(); j++) {
+						String columnValue = message.getBatch().get(j)[i];
+						column.add(columnValue);
+					}
+					unSortedColumns.add(column);
+					unsortedIds.add(idCounter);
+					numberOfColumns.add(idCounter);
+					idCounter += 1;
+				}
+				//storing Batchmessage
+				batchMessages.add(message);
+			}
 			this.inputReaders.get(message.getId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
+		}
 		return this;
+	}
+
+	private void handSortTaskToWorker(ActorRef<DependencyWorker.Message> dependencyWorker) {
+		if (!unSortedColumns.isEmpty()) {
+			getContext().getLog().info("HandSortTaskToWorker is working!");
+			List<String> column = unSortedColumns.get(0);
+			int columnId = unsortedIds.get(0);
+
+			//remove handled id's from Array
+			unSortedColumns.remove(column);
+			unsortedIds.remove(Integer.valueOf(columnId));
+			dependencyWorker.tell(new DependencyWorker.SortTaskMessage(this.largeMessageProxy, column, columnId, numberOfColumns.size()));
+		} else {
+			handCompareTaskToWorker(dependencyWorker);
+			getContext().getLog().info("HandSortTaskToWorker finished work!");
+		}
+	}
+
+	int firstColumnCounter = 0;
+	int secondColumnCounter = 0;
+	private void handCompareTaskToWorker(ActorRef<DependencyWorker.Message> dependencyWorker) {
+		List<List<String>> sortedColumns = sortedColumnContainer.values().stream().toList();
+
+		List<String> firstColumn = sortedColumns.get(firstColumnCounter);
+		List<String> secondColumn = sortedColumns.get(secondColumnCounter);
+		int firstColumnId = (int) sortedColumnContainer.keySet().toArray()[firstColumnCounter];
+		int secondColumnId = (int) sortedColumnContainer.keySet().toArray()[secondColumnCounter];
+
+		secondColumnCounter++;
+		if (secondColumnCounter >= sortedColumns.size()) {
+			firstColumnCounter += 1;
+			secondColumnCounter = firstColumnCounter;
+		}
+		dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 42, firstColumn, secondColumn, firstColumnId, secondColumnId));
 	}
 
 	private Behavior<Message> handle(RegistrationMessage message) {
@@ -163,8 +256,34 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 			// The worker should get some work ... let me send her something before I figure out what I actually want from her.
 			// I probably need to idle the worker for a while, if I do not have work for it right now ... (see master/worker pattern)
 
-			dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 42));
+			handSortTaskToWorker(dependencyWorker);
+			//dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 42));
 		}
+		return this;
+	}
+
+	HashMap<Integer,List<String>> sortedColumnContainer;
+	private Behavior<Message> handle(SortCompletionMessage message) {
+		ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
+		getContext().getLog().info("NOW I GET SOME WORK... i got {} things to do", message.sortedColumnContainer.size());
+		sortedColumnContainer = message.getSortedColumnContainer();
+
+		if (sortedColumnContainer.size() <= numberOfColumns.size()) {
+			handSortTaskToWorker(dependencyWorker);
+		} else {
+			handCompareTaskToWorker(dependencyWorker);
+		}
+		return this;
+	}
+
+	private Behavior<Message> handle(CompareCompletionMessage message) {
+		ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
+		//Erstelle hier das InclusionDependency Array:
+		getContext().getLog().info("columnId1 {}, OneInTwo {}" + message.getColumnId1(),message.oneInTwo);
+		getContext().getLog().info("columnId2 {}, TwoInOne {}", message.getColumnId2(), message.twoInOne);
+
+		this.resultCollector.tell(new ResultCollector.ResultMessage());
+
 		return this;
 	}
 
@@ -184,12 +303,15 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 			List<InclusionDependency> inds = new ArrayList<>(1);
 			inds.add(ind);
 
-			this.resultCollector.tell(new ResultCollector.ResultMessage(inds));
+			boolean oneInTwo = message.oneInTwo;
+			boolean twoInOne = message.twoInOne;
+
+			this.resultCollector.tell(new ResultCollector.ResultMessage(inds, oneInTwo, twoInOne));
 		}
 		// I still don't know what task the worker could help me to solve ... but let me keep her busy.
 		// Once I found all unary INDs, I could check if this.discoverNaryDependencies is set to true and try to detect n-ary INDs as well!
-
-		dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 42));
+		handSortTaskToWorker(dependencyWorker);
+		//dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 42));
 
 		// At some point, I am done with the discovery. That is when I should call my end method. Because I do not work on a completable task yet, I simply call it after some time.
 		if (System.currentTimeMillis() - this.startTime > 2000000)
