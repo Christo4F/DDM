@@ -249,7 +249,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		DependencyWorker.TaskMessage task = new DependencyWorker.TaskMessage(batch, this.shifts[fileId], hashAreaId, columnId, this.getContext().getSelf());
 
 		if(this.waitingDependencyWorkers.containsKey(hashAreaId)){
-			ActorRef<DependencyWorker.Message> dependencyWorker = this.waitingDependencyWorkers.get(new Integer(hashAreaId));
+			ActorRef<DependencyWorker.Message> dependencyWorker = this.waitingDependencyWorkers.get(hashAreaId);
 
 			this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(task, this.workerProxys.get(dependencyWorker)));
 			this.waitingDependencyWorkers.remove(hashAreaId);
@@ -335,10 +335,10 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 		this.idleDependencyWorkers.add(dependencyWorker);
 
+		mergeResult(workerResult);
 		if(this.busyDependencyWorkers.isEmpty() && this.waitingDependencyWorkers.isEmpty()){
 			this.end();
 		}
-		mergeResult(workerResult);
 		return this;
 	}
 
