@@ -185,6 +185,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 				.onMessage(RegistrationMessage.class, this::handle)
 				.onMessage(CompletionMessage.class, this::handle)
 				.onSignal(Terminated.class, this::handle)
+				.onMessage(ResultMessage.class, this::handle)
 				.build();
 	}
 
@@ -240,12 +241,12 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 				return this;
 
 			for(ActorRef<DependencyWorker.Message> waitingWorker : this.waitingDependencyWorkers.values()){
-				waitingWorker.tell(new DependencyWorker.SendResultsMessage());
+				waitingWorker.tell(new DependencyWorker.SendResultsMessage(this.largeMessageProxy, this.numColumns));
 			}
 			return this;
 		}
 
-		DependencyWorker.TaskMessage task = new DependencyWorker.TaskMessage(batch, this.shifts[hashAreaId], hashAreaId, this.getContext().getSelf()); //TODO: FileShift
+		DependencyWorker.TaskMessage task = new DependencyWorker.TaskMessage(batch, this.shifts[fileId], hashAreaId, this.getContext().getSelf()); //TODO: FileShift
 
 		if(this.waitingDependencyWorkers.containsKey(new Integer(hashAreaId))){
 			ActorRef<DependencyWorker.Message> dependencyWorker = this.waitingDependencyWorkers.get(new Integer(hashAreaId));
@@ -256,6 +257,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		}
 		else{
 			this.unassignedTasksByHashAreaId[hashAreaId].add(task);
+			this.getContext().getLog().info("Open Tasks on HashArea " + hashAreaId + " is " + this.unassignedTasksByHashAreaId[hashAreaId].size());
 		}
 		this.inputReaders.get(message.getId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
 		return this;
@@ -305,7 +307,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 			return this;
 		}
 
-		dependencyWorker.tell(new DependencyWorker.SendResultsMessage());
+		dependencyWorker.tell(new DependencyWorker.SendResultsMessage(this.largeMessageProxy, this.numColumns));
 		return this;
 
 	}

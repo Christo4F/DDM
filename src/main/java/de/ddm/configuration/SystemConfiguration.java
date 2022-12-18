@@ -26,13 +26,13 @@ public class SystemConfiguration {
 
 	private String actorSystemName = "ddm";            // The name of this application
 
-	private int numWorkers = 1;                        // The number of workers to start locally; should be at least one if the algorithm is started standalone (otherwise there are no workers to run the application)
+	private int numWorkers = 5;                        // The number of workers to start locally; should be at least one if the algorithm is started standalone (otherwise there are no workers to run the application)
 
 	private boolean startPaused = false;               // Wait for some console input to start; useful, if we want to wait manually until all ActorSystems in the cluster are started (e.g. to avoid work stealing effects in performance evaluations)
 
 	private boolean hardMode = false;					// Solve the hard version of the task
 
-	private int numHashAreas = 100;						// Number of different hashAreas used to distribute the task
+	private int numHashAreas = 10;						// Number of different hashAreas used to distribute the task
 
 	private static String getDefaultHost() {
 		try {

@@ -14,6 +14,8 @@ import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 
+import java.math.BigInteger;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
@@ -52,6 +54,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	public static class SendResultsMessage implements Message {
 		private static final long serialVersionUID = -4667745204456518160L;
 		ActorRef<LargeMessageProxy.Message> dependencyMinerLargeMessageProxy;
+		int numColumns;
 	}
 
 	////////////////////////
@@ -79,6 +82,10 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
 	private final ActorRef<LargeMessageProxy.Message> largeMessageProxy;
 
+	private int hashAreaId = -1;
+
+	private HashMap<String, BigInteger> hashMap;
+
 	////////////////////
 	// Actor Behavior //
 	////////////////////
@@ -88,6 +95,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 		return newReceiveBuilder()
 				.onMessage(ReceptionistListingMessage.class, this::handle)
 				.onMessage(TaskMessage.class, this::handle)
+				.onMessage(SendResultsMessage.class, this::handle)
 				.build();
 	}
 
@@ -100,9 +108,41 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
 	private Behavior<Message> handle(TaskMessage message) {
 		this.getContext().getLog().info("Working!");
-		// I should probably know how to solve this task, but for now I just pretend some work...
 
+		int hashAreaId = message.getHashAreaId();
+		int fileShift = message.getFileShift();
+		if(this.hashAreaId != hashAreaId)
+			this.hashMap = new HashMap<>();
+		this.hashAreaId = hashAreaId;
 
+		List<TableEntry> batch = message.getBatch();
+
+		for(TableEntry e : batch){
+			String value = e.getValue();
+			int column = e.getColumn();
+			BigInteger representation = BigInteger.ONE.shiftLeft(fileShift + column);
+			this.hashMap.merge(value, representation, (rep1,rep2) -> rep1.or(rep2));
+		}
+
+		message.getDependencyMiner().tell(new DependencyMiner.CompletionMessage(this.getContext().getSelf(), hashAreaId));
+		return this;
+	}
+
+	private Behavior<Message> handle(SendResultsMessage message) {
+		int numColumns = message.getNumColumns();
+		boolean[][] result = new boolean[numColumns][numColumns];
+		for(int i = 0; i < numColumns; i++){
+			outerLoop:
+			for(int j = 0; j < numColumns; j++){
+				if(i == j) continue;
+				for(BigInteger value:this.hashMap.values()){
+					if(value.testBit(i) && !value.testBit(j))
+						continue outerLoop;
+				}
+				result[i][j] = true; //Column i seems to be included in column j
+			}
+		}
+		this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(new DependencyMiner.ResultMessage(this.getContext().getSelf(), this.hashAreaId, result), message.getDependencyMinerLargeMessageProxy()));
 		return this;
 	}
 }
