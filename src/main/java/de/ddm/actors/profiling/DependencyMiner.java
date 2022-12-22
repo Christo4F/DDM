@@ -9,10 +9,10 @@ import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import akka.actor.typed.receptionist.Receptionist;
 import akka.actor.typed.receptionist.ServiceKey;
-import de.ddm.actors.Worker;
 import de.ddm.actors.patterns.LargeMessageProxy;
 import de.ddm.actors.patterns.Reaper;
 import de.ddm.serialization.AkkaSerializable;
+import de.ddm.singletons.DomainConfigurationSingleton;
 import de.ddm.singletons.InputConfigurationSingleton;
 import de.ddm.singletons.SystemConfigurationSingleton;
 import de.ddm.structures.InclusionDependency;
@@ -124,6 +124,8 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 	private long startTime;
 
+	private final int batchSize = DomainConfigurationSingleton.get().getInputReaderBatchSize();
+
 	private final boolean discoverNaryDependencies;
 	private final File[] inputFiles;
 	private final String[][] headerLines;
@@ -136,14 +138,11 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 	private final HashMap<String, BigInteger> hashMap;
 	private final boolean[] inputReaderFinishedFlag;
-	private boolean inputFinishedFlag = false;
 	private final int[] shifts;
 	private final boolean[] headerReadDone;
 	private int numColumns = 0;
 
 	private boolean[][] result;
-
-	private boolean inputFinished = false;
 
 	private Iterator<BigInteger> valueStream;
 
@@ -217,7 +216,6 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 				if(!b)
 					return this;
 			}
-			this.inputFinished = true;
 
 			this.valueStream = this.hashMap.values().iterator();
 			this.getContext().getLog().info("Input Reading Finished after {}ms.", System.currentTimeMillis() - this.startTime);
@@ -249,7 +247,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 			return;
 
 		List<BigInteger> workerBatch =  new ArrayList<>();
-		for(int i = 0; i < 100000; i++){ //TODO make length configurable
+		for(int i = 0; i < this.batchSize; i++){
 			if(!this.valueStream.hasNext())
 				break;
 			workerBatch.add(this.valueStream.next());
@@ -324,8 +322,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	}
 
 	private Behavior<Message> handle(Terminated signal) {
-		ActorRef<DependencyWorker.Message> dependencyWorker = signal.getRef().unsafeUpcast();
-		//this.dependencyWorkers.remove(dependencyWorker);
+		this.getContext().getLog().error("Watched Worker terminated. This is unhandled.");
 		return this;
 	}
 
