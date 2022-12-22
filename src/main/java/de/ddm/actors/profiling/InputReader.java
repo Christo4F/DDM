@@ -9,6 +9,7 @@ import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import com.opencsv.CSVReader;
 import com.opencsv.exceptions.CsvValidationException;
+import de.ddm.actors.patterns.Reaper;
 import de.ddm.serialization.AkkaSerializable;
 import de.ddm.singletons.DomainConfigurationSingleton;
 import de.ddm.singletons.InputConfigurationSingleton;
@@ -46,6 +47,12 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 		ActorRef<DependencyMiner.Message> replyTo;
 	}
 
+	@Getter
+	@NoArgsConstructor
+	public static class ShutdownMessage implements Message {
+		private static final long serialVersionUID = -8935783987324578324L;
+	}
+
 	////////////////////////
 	// Actor Construction //
 	////////////////////////
@@ -58,6 +65,7 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 
 	private InputReader(ActorContext<Message> context, final int id, final File inputFile) throws IOException, CsvValidationException {
 		super(context);
+		Reaper.watchWithDefaultReaper(this.getContext().getSelf());
 		this.id = id;
 		this.reader = InputConfigurationSingleton.get().createCSVReader(inputFile);
 		this.header = InputConfigurationSingleton.get().getHeader(inputFile);
@@ -84,6 +92,7 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 		return newReceiveBuilder()
 				.onMessage(ReadHeaderMessage.class, this::handle)
 				.onMessage(ReadBatchMessage.class, this::handle)
+				.onMessage(ShutdownMessage.class, this::handle)
 				.onSignal(PostStop.class, this::handle)
 				.build();
 	}
@@ -109,5 +118,10 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 	private Behavior<Message> handle(PostStop signal) throws IOException {
 		this.reader.close();
 		return this;
+	}
+
+	private Behavior<Message> handle(ShutdownMessage message) throws IOException {
+		this.reader.close();
+		return Behaviors.stopped();
 	}
 }

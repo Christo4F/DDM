@@ -9,7 +9,9 @@ import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import akka.actor.typed.receptionist.Receptionist;
 import akka.actor.typed.receptionist.ServiceKey;
+import de.ddm.actors.Worker;
 import de.ddm.actors.patterns.LargeMessageProxy;
+import de.ddm.actors.patterns.Reaper;
 import de.ddm.serialization.AkkaSerializable;
 import de.ddm.singletons.InputConfigurationSingleton;
 import de.ddm.singletons.SystemConfigurationSingleton;
@@ -17,12 +19,10 @@ import de.ddm.structures.InclusionDependency;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
-import scala.compat.java8.converterImpl.CollectionCanAccumulate;
 
 import java.io.File;
 import java.math.BigInteger;
 import java.util.*;
-import java.util.stream.Stream;
 
 public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
@@ -35,14 +35,14 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 	@NoArgsConstructor
 	public static class StartMessage implements Message {
-		private static final long serialVersionUID = -1963913294517850454L;
+		private static final long serialVersionUID = -1373856378948554634L;
 	}
 
 	@Getter
 	@NoArgsConstructor
 	@AllArgsConstructor
 	public static class HeaderMessage implements Message {
-		private static final long serialVersionUID = -5322425954432915838L;
+		private static final long serialVersionUID = -996836275024437593L;
 		int id;
 		String[] header;
 	}
@@ -51,7 +51,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	@NoArgsConstructor
 	@AllArgsConstructor
 	public static class BatchMessage implements Message {
-		private static final long serialVersionUID = 4591192372652568030L;
+		private static final long serialVersionUID = 956295636532980376L;
 		int id;
 		List<String[]> batch;
 	}
@@ -60,7 +60,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	@NoArgsConstructor
 	@AllArgsConstructor
 	public static class RegistrationMessage implements Message {
-		private static final long serialVersionUID = -4025238529984914107L;
+		private static final long serialVersionUID = 8405528507347265093L;
 		ActorRef<DependencyWorker.Message> dependencyWorker;
 		ActorRef<LargeMessageProxy.Message> largeMessageProxy;
 	}
@@ -69,9 +69,14 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	@NoArgsConstructor
 	@AllArgsConstructor
 	public static class CompletionMessage implements Message {
-		private static final long serialVersionUID = -7642425159675583598L;
+		private static final long serialVersionUID = -6496265936593759222L;
 		ActorRef<DependencyWorker.Message> dependencyWorker;
 		boolean[][] result;
+	}
+
+	@NoArgsConstructor
+	public static class ShutdownMessage implements Message {
+		private static final long serialVersionUID = 7516129288777469221L;
 	}
 
 	////////////////////////
@@ -88,7 +93,10 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 	private DependencyMiner(ActorContext<Message> context) {
 		super(context);
+		Reaper.watchWithDefaultReaper(this.getContext().getSelf());
 		this.discoverNaryDependencies = SystemConfigurationSingleton.get().isHardMode();
+		if(this.discoverNaryDependencies)
+			this.getContext().getLog().warn("Nary ING discovery is not yet implementeed in this program version. Starting unary ING discovery...");
 		this.inputFiles = InputConfigurationSingleton.get().getInputFiles();
 		this.headerLines = new String[this.inputFiles.length][];
 
@@ -156,6 +164,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 				.onMessage(HeaderMessage.class, this::handle)
 				.onMessage(RegistrationMessage.class, this::handle)
 				.onMessage(CompletionMessage.class, this::handle)
+				.onMessage(ShutdownMessage.class, this::handle)
 				.onSignal(Terminated.class, this::handle)
 				.build();
 	}
@@ -318,5 +327,14 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		ActorRef<DependencyWorker.Message> dependencyWorker = signal.getRef().unsafeUpcast();
 		//this.dependencyWorkers.remove(dependencyWorker);
 		return this;
+	}
+
+	private Behavior<Message> handle(ShutdownMessage message){
+		//this.largeMessageProxy.tell(new LargeMessageProxy.ShutdownMessage());
+		this.resultCollector.tell(new ResultCollector.ShutdownMessage());
+		for(ActorRef<InputReader.Message> inputReader:this.inputReaders){
+			inputReader.tell(new InputReader.ShutdownMessage());
+		}
+		return Behaviors.stopped();
 	}
 }

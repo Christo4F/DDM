@@ -8,6 +8,7 @@ import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import akka.actor.typed.receptionist.Receptionist;
 import de.ddm.actors.patterns.LargeMessageProxy;
+import de.ddm.actors.patterns.Reaper;
 import de.ddm.serialization.AkkaSerializable;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
@@ -44,6 +45,12 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 		List<BigInteger> batch;
 		int numColumns;
 	}
+	@Getter
+	@NoArgsConstructor
+	public static class ShutdownMessage implements Message {
+		private static final long serialVersionUID = -4667745208356518160L;
+	}
+
 
 	////////////////////////
 	// Actor Construction //
@@ -57,7 +64,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
 	private DependencyWorker(ActorContext<Message> context) {
 		super(context);
-
+		Reaper.watchWithDefaultReaper(this.getContext().getSelf());
 		final ActorRef<Receptionist.Listing> listingResponseAdapter = context.messageAdapter(Receptionist.Listing.class, ReceptionistListingMessage::new);
 		context.getSystem().receptionist().tell(Receptionist.subscribe(DependencyMiner.dependencyMinerService, listingResponseAdapter));
 
@@ -79,6 +86,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 		return newReceiveBuilder()
 				.onMessage(ReceptionistListingMessage.class, this::handle)
 				.onMessage(TaskMessage.class, this::handle)
+				.onMessage(ShutdownMessage.class, this::handle)
 				.build();
 	}
 
@@ -108,5 +116,10 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 		this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(new DependencyMiner.CompletionMessage(this.getContext().getSelf(), result), message.getDependencyMinerLargeMessageProxy()));
 
 		return this;
+	}
+
+	private Behavior<Message> handle(ShutdownMessage message) {
+		//this.largeMessageProxy.tell(new LargeMessageProxy.ShutdownMessage());
+		return Behaviors.stopped();
 	}
 }

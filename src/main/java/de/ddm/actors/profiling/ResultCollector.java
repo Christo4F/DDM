@@ -7,6 +7,7 @@ import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import de.ddm.actors.Guardian;
+import de.ddm.actors.patterns.Reaper;
 import de.ddm.serialization.AkkaSerializable;
 import de.ddm.singletons.DomainConfigurationSingleton;
 import de.ddm.structures.InclusionDependency;
@@ -42,6 +43,11 @@ public class ResultCollector extends AbstractBehavior<ResultCollector.Message> {
 		private static final long serialVersionUID = -6603856949941810321L;
 	}
 
+	@NoArgsConstructor
+	public static class ShutdownMessage implements Message {
+		private static final long serialVersionUID = -8673467023459807531L;
+	}
+
 	////////////////////////
 	// Actor Construction //
 	////////////////////////
@@ -54,6 +60,7 @@ public class ResultCollector extends AbstractBehavior<ResultCollector.Message> {
 
 	private ResultCollector(ActorContext<Message> context) throws IOException {
 		super(context);
+		Reaper.watchWithDefaultReaper(this.getContext().getSelf());
 
 		File file = new File(DomainConfigurationSingleton.get().getResultCollectorOutputFileName());
 		if (file.exists() && !file.delete())
@@ -79,6 +86,7 @@ public class ResultCollector extends AbstractBehavior<ResultCollector.Message> {
 		return newReceiveBuilder()
 				.onMessage(ResultMessage.class, this::handle)
 				.onMessage(FinalizeMessage.class, this::handle)
+				.onMessage(ShutdownMessage.class, this::handle)
 				.onSignal(PostStop.class, this::handle)
 				.build();
 	}
@@ -106,4 +114,10 @@ public class ResultCollector extends AbstractBehavior<ResultCollector.Message> {
 		this.writer.close();
 		return this;
 	}
+
+	private Behavior<Message> handle(ShutdownMessage signal) throws IOException {
+		this.writer.close();
+		return Behaviors.stopped();
+	}
+
 }
