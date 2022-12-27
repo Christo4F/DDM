@@ -67,7 +67,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	public static class CompletionMessage implements Message {
 		private static final long serialVersionUID = -7642425159675583598L;
 		ActorRef<DependencyWorker.Message> dependencyWorker;
-		int result;
+		//int result;
 		int columnId1;
 		int columnId2;
 		boolean oneInTwo;
@@ -123,12 +123,14 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		this.dependencyWorkers = new ArrayList<>();
 
 
-		this.batchMessages = new ArrayList<>();
+		//this.batchMessages = new ArrayList<>();
 		this.readInputFiles = new ArrayList<>();
 		this.unSortedColumns = new ArrayList<>();
 		this.unsortedIds = new ArrayList<>();
 		this.numberOfColumns = new ArrayList<>();
 		this.sortedColumnContainer = new HashMap<>();
+
+		idCounter = 0;
 
 		context.getSystem().receptionist().tell(Receptionist.register(dependencyMinerService, context.getSelf()));
 	}
@@ -148,6 +150,8 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	private final ActorRef<LargeMessageProxy.Message> largeMessageProxy;
 
 	private final List<ActorRef<DependencyWorker.Message>> dependencyWorkers;
+
+	int arraySize;
 
 	////////////////////
 	// Actor Behavior //
@@ -176,16 +180,20 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		return this;
 	}
 
+	int numOfColumns;
 	private Behavior<Message> handle(HeaderMessage message) {
 		this.headerLines[message.getId()] = message.getHeader();
+		//Shift hier richtig?
+		int shift = message.getHeader().length;
+		numOfColumns += shift;
 		return this;
 	}
 
-	ArrayList<BatchMessage> batchMessages;
+	//ArrayList<BatchMessage> batchMessages;
 	ArrayList<Integer> readInputFiles;
 	List<ArrayList<String>> unSortedColumns;
 	List<Integer> unsortedIds;
-	int idCounter = 0;
+	int idCounter;
 	List<Integer> numberOfColumns;
 	private Behavior<Message> handle(BatchMessage message) {
 		// Ignoring batch content for now ... but I could do so much with it.
@@ -205,9 +213,10 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 					unsortedIds.add(idCounter);
 					numberOfColumns.add(idCounter);
 					idCounter += 1;
+					getContext().getLog().info("Column size {}", idCounter);
 				}
 				//storing Batchmessage
-				batchMessages.add(message);
+				//batchMessages.add(message);
 			}
 			this.inputReaders.get(message.getId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
 		}
@@ -216,17 +225,16 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 	private void handSortTaskToWorker(ActorRef<DependencyWorker.Message> dependencyWorker) {
 		if (!unSortedColumns.isEmpty()) {
-			getContext().getLog().info("HandSortTaskToWorker is working!");
 			List<String> column = unSortedColumns.get(0);
 			int columnId = unsortedIds.get(0);
 
+			arraySize = arraySize + column.size() * column.size();
 			//remove handled id's from Array
 			unSortedColumns.remove(column);
 			unsortedIds.remove(Integer.valueOf(columnId));
 			dependencyWorker.tell(new DependencyWorker.SortTaskMessage(this.largeMessageProxy, column, columnId, numberOfColumns.size()));
 		} else {
 			handCompareTaskToWorker(dependencyWorker);
-			getContext().getLog().info("HandSortTaskToWorker finished work!");
 		}
 	}
 
@@ -245,7 +253,13 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 			firstColumnCounter += 1;
 			secondColumnCounter = firstColumnCounter;
 		}
-		dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 42, firstColumn, secondColumn, firstColumnId, secondColumnId));
+		//getContext().getLog().info("firstColumnCounter " + firstColumnCounter);
+		//getContext().getLog().info("secondColumnCounter " + secondColumnCounter);
+		dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, firstColumn, secondColumn, firstColumnId, secondColumnId));
+
+		if (firstColumnCounter >= numOfColumns && secondColumnCounter >= numOfColumns) {
+			this.end();
+		}
 	}
 
 	private Behavior<Message> handle(RegistrationMessage message) {
@@ -257,7 +271,6 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 			// I probably need to idle the worker for a while, if I do not have work for it right now ... (see master/worker pattern)
 
 			handSortTaskToWorker(dependencyWorker);
-			//dependencyWorker.tell(new DependencyWorker.TaskMessage(this.largeMessageProxy, 42));
 		}
 		return this;
 	}
@@ -265,7 +278,6 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	HashMap<Integer,List<String>> sortedColumnContainer;
 	private Behavior<Message> handle(SortCompletionMessage message) {
 		ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
-		getContext().getLog().info("NOW I GET SOME WORK... i got {} things to do", message.sortedColumnContainer.size());
 		sortedColumnContainer = message.getSortedColumnContainer();
 
 		if (sortedColumnContainer.size() <= numberOfColumns.size()) {
@@ -278,10 +290,6 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 	private Behavior<Message> handle(CompareCompletionMessage message) {
 		ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
-		//Erstelle hier das InclusionDependency Array:
-		getContext().getLog().info("columnId1 {}, OneInTwo {}" + message.getColumnId1(),message.oneInTwo);
-		getContext().getLog().info("columnId2 {}, TwoInOne {}", message.getColumnId2(), message.twoInOne);
-
 		this.resultCollector.tell(new ResultCollector.ResultMessage());
 
 		return this;
@@ -292,21 +300,18 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		// If this was a reasonable result, I would probably do something with it and potentially generate more work ... for now, let's just generate a random, binary IND.
 
 		if (this.headerLines[0] != null) {
-			Random random = new Random();
-			int dependent = random.nextInt(this.inputFiles.length);
-			int referenced = random.nextInt(this.inputFiles.length);
-			File dependentFile = this.inputFiles[dependent];
-			File referencedFile = this.inputFiles[referenced];
-			String[] dependentAttributes = {this.headerLines[dependent][random.nextInt(this.headerLines[dependent].length)], this.headerLines[dependent][random.nextInt(this.headerLines[dependent].length)]};
-			String[] referencedAttributes = {this.headerLines[referenced][random.nextInt(this.headerLines[referenced].length)], this.headerLines[referenced][random.nextInt(this.headerLines[referenced].length)]};
-			InclusionDependency ind = new InclusionDependency(dependentFile, dependentAttributes, referencedFile, referencedAttributes);
-			List<InclusionDependency> inds = new ArrayList<>(1);
-			inds.add(ind);
-
 			boolean oneInTwo = message.oneInTwo;
 			boolean twoInOne = message.twoInOne;
+			int firstColumnId = message.getColumnId1();
+			int secondColumnId = message.getColumnId2();
 
-			this.resultCollector.tell(new ResultCollector.ResultMessage(inds, oneInTwo, twoInOne));
+
+			boolean[][] result = new boolean[numOfColumns][numOfColumns];
+
+			result[firstColumnId][secondColumnId] = oneInTwo;
+			result[secondColumnId][firstColumnId] = twoInOne;
+
+			this.resultCollector.tell(new ResultCollector.ResultMessage(result));
 		}
 		// I still don't know what task the worker could help me to solve ... but let me keep her busy.
 		// Once I found all unary INDs, I could check if this.discoverNaryDependencies is set to true and try to detect n-ary INDs as well!

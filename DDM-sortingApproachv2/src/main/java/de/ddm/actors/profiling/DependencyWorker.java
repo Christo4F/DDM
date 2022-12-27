@@ -39,7 +39,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	public static class TaskMessage implements Message {
 		private static final long serialVersionUID = -4667745204456518160L;
 		ActorRef<LargeMessageProxy.Message> dependencyMinerLargeMessageProxy;
-		int task;
+		//int task;
 		List<String> firstColumn;
 		List<String> secondColumn;
 		int firstColumnId;
@@ -106,7 +106,6 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	}
 
 	HashMap<Integer,List<String>> sortedColumnContainer;
-	int counter = 0;
 	private Behavior<Message> handle(SortTaskMessage message) {
 
 		List<String> unsortColumn = new ArrayList<>();
@@ -116,12 +115,10 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 		//Es sollen nur Anzahl columIds column sortiert werden. Wenn alle Columns sortiert sind, wird die Hashmap zurück gegeben.
 		if (columnId < message.numberOfColumns) {
 
-			getContext().getLog().info("Number of columns: " + message.numberOfColumns);
 			//Sort column
 			Collections.sort(unsortColumn);
 			sortedColumn = unsortColumn;
 
-			getContext().getLog().info("counter " + counter);
 			//Save sorted Column by columnId
 
 			//Erst später im DependencyMiner zusammenstellen
@@ -129,9 +126,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
 			LargeMessageProxy.LargeMessage sortCompletionMessage = new DependencyMiner.SortCompletionMessage(this.getContext().getSelf(), sortedColumnContainer);
 			this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(sortCompletionMessage, message.getDependencyMinerLargeMessageProxy()));
-			counter++;
 		} else {
-			getContext().getLog().info("Jetzt sende ich es an die SortCompletionMessage");
 			LargeMessageProxy.LargeMessage sortCompletionMessage = new DependencyMiner.SortCompletionMessage(this.getContext().getSelf(), sortedColumnContainer);
 			this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(sortCompletionMessage, message.getDependencyMinerLargeMessageProxy()));
 		}
@@ -152,8 +147,8 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 		int firstColumnId = message.getFirstColumnId();
 		int secondColumnId = message.getSecondColumnId();
 
-		getContext().getLog().info("FirstColumn received " + Arrays.toString(firstColumn.toArray()));
-		getContext().getLog().info("SecondColumn received " + Arrays.toString(secondColumn.toArray()));
+		//getContext().getLog().info("FirstColumn received " + Arrays.toString(firstColumn.toArray()));
+		//getContext().getLog().info("SecondColumn received " + Arrays.toString(secondColumn.toArray()));
 
 		for (int i = 0; i < firstColumn.size(); i++) {
 			for (int y = 0; y < secondColumn.size(); y++) {
@@ -175,16 +170,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 		} else {
 			secondInFirst = false;
 		}
-
-		//Hier steht noch der alte standard Code
-		int result = message.getTask();
-		long time = System.currentTimeMillis();
-		Random rand = new Random();
-		int runtime = (rand.nextInt(2) + 2) * 1000;
-		while (System.currentTimeMillis() - time < runtime)
-			result = ((int) Math.abs(Math.sqrt(result)) * result) % 1334525;
-
-		LargeMessageProxy.LargeMessage completionMessage = new DependencyMiner.CompletionMessage(this.getContext().getSelf(), result, firstColumnId, secondColumnId, firstInSecond, secondInFirst);
+		LargeMessageProxy.LargeMessage completionMessage = new DependencyMiner.CompletionMessage(this.getContext().getSelf(), firstColumnId, secondColumnId, firstInSecond, secondInFirst);
 		this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(completionMessage, message.getDependencyMinerLargeMessageProxy()));
 
 		return this;
